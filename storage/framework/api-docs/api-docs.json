@@ -1,0 +1,1825 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "My Laravel API",
+        "description": "Docs",
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "/api",
+            "description": "API base"
+        }
+    ],
+    "paths": {
+        "/auth/login": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Login with email & password",
+                "operationId": "8cb7742ae98d0990acb2907c4e00bf24",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "email",
+                                    "password"
+                                ],
+                                "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "admin@example.com"
+                                    },
+                                    "password": {
+                                        "type": "string",
+                                        "format": "password",
+                                        "example": "Admin@123"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Logged in",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "required": [
+                                        "token",
+                                        "user"
+                                    ],
+                                    "properties": {
+                                        "token": {
+                                            "type": "string",
+                                            "example": "1|eyJ0eXAiOiJKV1QiLCJh..."
+                                        },
+                                        "user": {
+                                            "required": [
+                                                "id",
+                                                "email"
+                                            ],
+                                            "properties": {
+                                                "id": {
+                                                    "type": "integer",
+                                                    "example": 42
+                                                },
+                                                "email": {
+                                                    "type": "string",
+                                                    "format": "email",
+                                                    "example": "user@example.com"
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid credentials"
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                }
+            }
+        },
+        "/auth/me": {
+            "get": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Current user profile",
+                "description": "Requires Sanctum Bearer token (personal access token).",
+                "operationId": "authMe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "required": [
+                                        "id",
+                                        "email",
+                                        "email_verified"
+                                    ],
+                                    "properties": {
+                                        "id": {
+                                            "type": "integer",
+                                            "example": 1
+                                        },
+                                        "name": {
+                                            "type": "string",
+                                            "example": "Akash Singh",
+                                            "nullable": true
+                                        },
+                                        "email": {
+                                            "type": "string",
+                                            "format": "email",
+                                            "example": "akashsngh681681@gmail.com"
+                                        },
+                                        "email_verified": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "Unauthenticated."
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/auth/logout": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Logout (revoke current token)",
+                "operationId": "0d29c740dc06d77602af8095bf4654cc",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/forgot-password": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Send password reset link to email",
+                "operationId": "160af43c42731c5476b5eb795bc2f893",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "email"
+                                ],
+                                "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "user@example.com"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Reset link email sent",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "message": {
+                                            "type": "string",
+                                            "example": "We have emailed your password reset link!"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error or user not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "The given data was invalid."
+                                        },
+                                        "errors": {
+                                            "properties": {
+                                                "email": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string",
+                                                        "example": "We can't find a user with that email address."
+                                                    }
+                                                }
+                                            },
+                                            "type": "object"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/reset-password": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Reset password using email + reset token",
+                "operationId": "70d385edd0f0d51cbc80daac6acee7a3",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "email",
+                                    "token",
+                                    "password",
+                                    "password_confirmation"
+                                ],
+                                "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "user@example.com"
+                                    },
+                                    "token": {
+                                        "type": "string",
+                                        "example": "reset-token-from-email"
+                                    },
+                                    "password": {
+                                        "type": "string",
+                                        "format": "password",
+                                        "example": "NewStrong#123"
+                                    },
+                                    "password_confirmation": {
+                                        "type": "string",
+                                        "format": "password",
+                                        "example": "NewStrong#123"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Password reset successful",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid or expired token"
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                }
+            }
+        },
+        "/auth/email/send-verification": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Send email verification link to the authenticated user",
+                "operationId": "8972f9ddcf4b784ad0615fe464b327a8",
+                "responses": {
+                    "200": {
+                        "description": "Verification email sent",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/auth/email/verify": {
+            "post": {
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Verify email using token/OTP or signed URL fields",
+                "operationId": "ad27334c28c0575a588a2a838b353d44",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "required": [
+                                            "token"
+                                        ],
+                                        "properties": {
+                                            "token": {
+                                                "type": "string",
+                                                "example": "verification-token-or-otp"
+                                            }
+                                        },
+                                        "type": "object"
+                                    },
+                                    {
+                                        "required": [
+                                            "id",
+                                            "hash",
+                                            "expires",
+                                            "signature"
+                                        ],
+                                        "properties": {
+                                            "id": {
+                                                "description": "User ID from the link",
+                                                "type": "integer",
+                                                "example": 42
+                                            },
+                                            "hash": {
+                                                "type": "string",
+                                                "example": "abcdef123456"
+                                            },
+                                            "expires": {
+                                                "type": "integer",
+                                                "example": 1725400000
+                                            },
+                                            "signature": {
+                                                "type": "string",
+                                                "example": "signed-url-signature"
+                                            }
+                                        },
+                                        "type": "object"
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Email verified",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid/expired verification"
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                }
+            }
+        },
+        "/comm/queue": {
+            "post": {
+                "tags": [
+                    "CommController"
+                ],
+                "summary": "Queue a message to be sent later",
+                "operationId": "959834956bcd00e7f5ab93da448d2304",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "channel"
+                                ],
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "enum": [
+                                            "email",
+                                            "sms",
+                                            "whatsapp",
+                                            "push"
+                                        ],
+                                        "example": "email"
+                                    },
+                                    "to_email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "user@example.com",
+                                        "nullable": true
+                                    },
+                                    "to_phone": {
+                                        "type": "string",
+                                        "maxLength": 32,
+                                        "example": "+919999999999",
+                                        "nullable": true
+                                    },
+                                    "subject": {
+                                        "type": "string",
+                                        "maxLength": 191,
+                                        "example": "Welcome",
+                                        "nullable": true
+                                    },
+                                    "body_text": {
+                                        "type": "string",
+                                        "example": "Hello from tenant",
+                                        "nullable": true
+                                    },
+                                    "body_html": {
+                                        "type": "string",
+                                        "example": "<p>Hello from tenant</p>",
+                                        "nullable": true
+                                    },
+                                    "vars_json": {
+                                        "type": "object",
+                                        "example": {
+                                            "name": "Abhay",
+                                            "orderId": "12345"
+                                        },
+                                        "nullable": true,
+                                        "additionalProperties": true
+                                    },
+                                    "template_id": {
+                                        "type": "integer",
+                                        "example": 12,
+                                        "nullable": true
+                                    },
+                                    "scheduled_at": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "example": "2025-09-05T14:30:00+05:30",
+                                        "nullable": true
+                                    },
+                                    "priority": {
+                                        "type": "integer",
+                                        "example": 0,
+                                        "nullable": true
+                                    },
+                                    "idempotency_key": {
+                                        "type": "string",
+                                        "maxLength": 64,
+                                        "example": "email-12345-unique",
+                                        "nullable": true
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Queued",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "queued": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "outbox_id": {
+                                            "type": "integer",
+                                            "example": 1024
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated"
+                    },
+                    "403": {
+                        "description": "Forbidden"
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "The channel field is required."
+                                        },
+                                        "errors": {
+                                            "type": "object",
+                                            "additionalProperties": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/comm/send": {
+            "post": {
+                "tags": [
+                    "CommController"
+                ],
+                "summary": "Send a message immediately (tenant -> global provider fallback)",
+                "operationId": "edbddff62f947746ccf45f19dee2201f",
+                "parameters": [
+                    {
+                        "name": "tenant",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "channel"
+                                ],
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "enum": [
+                                            "email",
+                                            "sms",
+                                            "push"
+                                        ]
+                                    },
+                                    "to_email": {
+                                        "type": "string",
+                                        "format": "email"
+                                    },
+                                    "subject": {
+                                        "type": "string"
+                                    },
+                                    "body_text": {
+                                        "type": "string"
+                                    },
+                                    "body_html": {
+                                        "type": "string"
+                                    },
+                                    "to_phone": {
+                                        "type": "string"
+                                    },
+                                    "to_device_token": {
+                                        "type": "string"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "data": {
+                                        "type": "object"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Sent"
+                    },
+                    "500": {
+                        "description": "Provider error or misconfiguration"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/comm/test": {
+            "post": {
+                "tags": [
+                    "CommController"
+                ],
+                "summary": "Quick test helper that builds a minimal payload and sends",
+                "operationId": "95007dc1280bdf5fdd0ac379d4955424",
+                "parameters": [
+                    {
+                        "name": "tenant",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "channel",
+                                    "to"
+                                ],
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "enum": [
+                                            "email",
+                                            "sms",
+                                            "push"
+                                        ]
+                                    },
+                                    "to": {
+                                        "description": "Email, phone, or device token",
+                                        "type": "string"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Sent"
+                    },
+                    "500": {
+                        "description": "Provider error or misconfiguration"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/comm/providers": {
+            "get": {
+                "tags": [
+                    "Comm Providers"
+                ],
+                "summary": "List providers for this tenant",
+                "operationId": "06b446c824d60702d34c63ea7cf60be3",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            },
+            "post": {
+                "tags": [
+                    "Comm Providers"
+                ],
+                "summary": "Create provider (email|sms|push)",
+                "operationId": "8a9a76bd864c4fbc90d53b23c59424d3",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "channel",
+                                    "provider"
+                                ],
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "enum": [
+                                            "email",
+                                            "sms",
+                                            "push"
+                                        ]
+                                    },
+                                    "provider": {
+                                        "type": "string",
+                                        "example": "ses"
+                                    },
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "credentials_json": {
+                                        "type": "object"
+                                    },
+                                    "from_email": {
+                                        "type": "string"
+                                    },
+                                    "from_name": {
+                                        "type": "string"
+                                    },
+                                    "sender_id": {
+                                        "type": "string"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "example": "active"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/comm/providers/{id}": {
+            "put": {
+                "tags": [
+                    "Comm Providers"
+                ],
+                "summary": "Update provider",
+                "operationId": "019b3d9084e310bcc40eb7c5a2f1039c",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "credentials_json": {
+                                        "type": "object"
+                                    },
+                                    "from_email": {
+                                        "type": "string"
+                                    },
+                                    "from_name": {
+                                        "type": "string"
+                                    },
+                                    "sender_id": {
+                                        "type": "string"
+                                    },
+                                    "status": {
+                                        "type": "string"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/dashboard": {
+            "get": {
+                "tags": [
+                    "Dashboard"
+                ],
+                "summary": "Basic KPIs for the tenant (counts)",
+                "operationId": "0df3931d2243706ab19822c830ed289d",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/admin/plans": {
+            "get": {
+                "tags": [
+                    "Plans"
+                ],
+                "summary": "List plans",
+                "operationId": "91e8d34a719a9a6ccdb18d36229714de",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            },
+            "post": {
+                "tags": [
+                    "Plans"
+                ],
+                "summary": "Create plan",
+                "operationId": "c04f9cc9136115744f0d27a4bce00994",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "name",
+                                    "price",
+                                    "period"
+                                ],
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "price": {
+                                        "type": "number",
+                                        "format": "float"
+                                    },
+                                    "period": {
+                                        "type": "string",
+                                        "enum": [
+                                            "monthly",
+                                            "yearly"
+                                        ]
+                                    },
+                                    "limits_json": {
+                                        "type": "object"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/admin/plans/{id}": {
+            "put": {
+                "tags": [
+                    "Plans"
+                ],
+                "summary": "Update plan",
+                "operationId": "7d5d9a2bf578f1616b52da1ab5893efc",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "price": {
+                                        "type": "number",
+                                        "format": "float"
+                                    },
+                                    "period": {
+                                        "type": "string",
+                                        "enum": [
+                                            "monthly",
+                                            "yearly"
+                                        ]
+                                    },
+                                    "limits_json": {
+                                        "type": "object"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/roles": {
+            "get": {
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "List roles in tenant",
+                "operationId": "2af6292384c94955cc10d9ad2c16a7db",
+                "parameters": [
+                    {
+                        "name": "tenant",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            },
+            "post": {
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Create role in tenant",
+                "operationId": "e77f47eca4ac46188e6c56e02aa9098e",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "key"
+                                ],
+                                "properties": {
+                                    "key": {
+                                        "type": "string"
+                                    },
+                                    "name": {
+                                        "type": "string"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/roles/{roleId}/permissions": {
+            "post": {
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Set permissions for a role (replace)",
+                "operationId": "fa637b5cdfaaa1b4a326af82dad37868",
+                "parameters": [
+                    {
+                        "name": "roleId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "permission_keys"
+                                ],
+                                "properties": {
+                                    "permission_keys": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/users/{userId}/roles": {
+            "post": {
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Assign roles to user in tenant (replace)",
+                "operationId": "7faea808468da7872fcfc2940efeb51e",
+                "parameters": [
+                    {
+                        "name": "userId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "role_keys"
+                                ],
+                                "properties": {
+                                    "role_keys": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/permissions": {
+            "get": {
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "List available permission keys",
+                "operationId": "59e3251fe008abb6924954a64cb72113",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "tags": [
+                    "Registration"
+                ],
+                "summary": "Register a new user (optionally with company)",
+                "operationId": "6b7cbf5e471410212cbbc6de4d560e6a",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "email",
+                                    "password"
+                                ],
+                                "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "user@example.com"
+                                    },
+                                    "password": {
+                                        "type": "string",
+                                        "format": "password",
+                                        "example": "Strong@123"
+                                    },
+                                    "company": {
+                                        "type": "string",
+                                        "example": "Acme Inc.",
+                                        "nullable": true
+                                    },
+                                    "plan_id": {
+                                        "type": "integer",
+                                        "example": 1,
+                                        "nullable": true
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Registered",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "user_id": {
+                                            "type": "integer",
+                                            "example": 101
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                }
+            }
+        },
+        "/tenants": {
+            "post": {
+                "tags": [
+                    "Registration"
+                ],
+                "summary": "Create a tenant (shared / schema / database)",
+                "description": "Authenticated endpoint. Provisions DB/schema when needed and seeds owner role.",
+                "operationId": "f0193cfb703f3699501ec8f7770a7535",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "name",
+                                    "mode"
+                                ],
+                                "properties": {
+                                    "name": {
+                                        "type": "string",
+                                        "example": "Acme HQ"
+                                    },
+                                    "slug": {
+                                        "type": "string",
+                                        "example": "acme-hq",
+                                        "nullable": true
+                                    },
+                                    "plan_id": {
+                                        "type": "integer",
+                                        "example": 2,
+                                        "nullable": true
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "shared",
+                                            "schema",
+                                            "database"
+                                        ],
+                                        "example": "schema"
+                                    },
+                                    "owner_user_id": {
+                                        "type": "integer",
+                                        "example": 42,
+                                        "nullable": true
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "tenant": {
+                                            "type": "string",
+                                            "example": "acme-hq"
+                                        },
+                                        "mode": {
+                                            "type": "string",
+                                            "example": "schema"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated"
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/t/{tenant}/users": {
+            "post": {
+                "tags": [
+                    "Registration"
+                ],
+                "summary": "Create a user inside a tenant and assign a role",
+                "operationId": "c3ad6b7b24644d34a9667dfb19e9b089",
+                "parameters": [
+                    {
+                        "name": "tenant",
+                        "in": "path",
+                        "description": "Tenant slug",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "example": "acme-hq"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "email",
+                                    "password"
+                                ],
+                                "properties": {
+                                    "email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "example": "member@example.com"
+                                    },
+                                    "password": {
+                                        "type": "string",
+                                        "format": "password",
+                                        "example": "TempPwd#123"
+                                    },
+                                    "role_key": {
+                                        "type": "string",
+                                        "example": "admin",
+                                        "nullable": true
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "user_id": {
+                                            "type": "integer",
+                                            "example": 501
+                                        },
+                                        "role": {
+                                            "type": "string",
+                                            "example": "admin"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthenticated"
+                    },
+                    "403": {
+                        "description": "Forbidden"
+                    },
+                    "422": {
+                        "description": "Validation error"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ]
+            }
+        },
+        "/admin/tenants/{tenantId}/subscription": {
+            "post": {
+                "tags": [
+                    "Subscriptions"
+                ],
+                "summary": "Create or renew a subscription for a tenant",
+                "operationId": "232f442df1b205205deb746666306b67",
+                "parameters": [
+                    {
+                        "name": "tenantId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "plan_id",
+                                    "period_start",
+                                    "period_end",
+                                    "status"
+                                ],
+                                "properties": {
+                                    "plan_id": {
+                                        "type": "integer"
+                                    },
+                                    "period_start": {
+                                        "type": "string",
+                                        "format": "date-time"
+                                    },
+                                    "period_end": {
+                                        "type": "string",
+                                        "format": "date-time"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "active",
+                                            "trial",
+                                            "past_due",
+                                            "canceled"
+                                        ]
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/ping": {
+            "get": {
+                "tags": [
+                    "Testing System Checkup"
+                ],
+                "summary": "Health check",
+                "operationId": "6a1de1126e482dfb95ea96d28633fec1",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean",
+                                            "example": true
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/tenants": {
+            "get": {
+                "tags": [
+                    "Tenants"
+                ],
+                "summary": "List tenants",
+                "operationId": "dcb640557633ced3fb28ba6e15abc2cb",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            },
+            "post": {
+                "tags": [
+                    "Tenants"
+                ],
+                "summary": "Register tenant (shared|schema|database)",
+                "operationId": "9f538fa94e61ff69357318bc2cb85dbf",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "name",
+                                    "mode"
+                                ],
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "slug": {
+                                        "type": "string"
+                                    },
+                                    "plan_id": {
+                                        "type": "integer"
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                            "shared",
+                                            "schema",
+                                            "database"
+                                        ]
+                                    },
+                                    "owner_user_id": {
+                                        "type": "integer"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/admin/tenants/{id}": {
+            "put": {
+                "tags": [
+                    "Tenants"
+                ],
+                "summary": "Update tenant status or plan",
+                "operationId": "cb76c9242a43c42a2ab2e4acdadf87e7",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "active",
+                                            "suspended",
+                                            "closed"
+                                        ]
+                                    },
+                                    "plan_id": {
+                                        "type": "integer"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Product": {
+                "required": [
+                    "id",
+                    "name",
+                    "price"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "example": 12
+                    },
+                    "name": {
+                        "type": "string",
+                        "example": "Watch"
+                    },
+                    "price": {
+                        "type": "number",
+                        "format": "float",
+                        "example": 1999.99
+                    },
+                    "description": {
+                        "type": "string",
+                        "example": "Steel strap",
+                        "nullable": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                },
+                "type": "object"
+            },
+            "FcmPushMessage": {
+                "required": [
+                    "to_device_token"
+                ],
+                "properties": {
+                    "to_device_token": {
+                        "description": "Expected payload for FCM push",
+                        "type": "string",
+                        "example": "dP5Vb5m...abc"
+                    },
+                    "title": {
+                        "type": "string",
+                        "example": "Welcome"
+                    },
+                    "body": {
+                        "type": "string",
+                        "example": "Thanks for signing up!",
+                        "nullable": true
+                    },
+                    "body_text": {
+                        "type": "string",
+                        "example": "Thanks for signing up!",
+                        "nullable": true
+                    },
+                    "data": {
+                        "type": "object",
+                        "example": {
+                            "orderId": "123"
+                        },
+                        "nullable": true,
+                        "additionalProperties": true
+                    },
+                    "provider_config": {
+                        "properties": {
+                            "server_key": {
+                                "type": "string",
+                                "example": "AAAA...."
+                            }
+                        },
+                        "type": "object",
+                        "nullable": true
+                    }
+                },
+                "type": "object"
+            }
+        },
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "bearerFormat": "JWT",
+                "scheme": "bearer"
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Auth",
+            "description": "Auth"
+        },
+        {
+            "name": "CommController",
+            "description": "CommController"
+        },
+        {
+            "name": "Comm Providers",
+            "description": "Comm Providers"
+        },
+        {
+            "name": "Dashboard",
+            "description": "Dashboard"
+        },
+        {
+            "name": "Plans",
+            "description": "Plans"
+        },
+        {
+            "name": "RBAC",
+            "description": "RBAC"
+        },
+        {
+            "name": "Registration",
+            "description": "Registration"
+        },
+        {
+            "name": "Subscriptions",
+            "description": "Subscriptions"
+        },
+        {
+            "name": "Testing System Checkup",
+            "description": "Testing System Checkup"
+        },
+        {
+            "name": "Tenants",
+            "description": "Tenants"
+        }
+    ]
+}
