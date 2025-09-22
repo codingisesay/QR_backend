@@ -140,7 +140,7 @@ Route::middleware(['auth:sanctum','tenant'])->group(function () {
 
   Route::get('/products/{idOrSku}/label-stats', [QrController::class, 'labelStats']);
 
-   Route::get('/qr/print-runs/{runId}/codes', [QrController::class, 'listRunCodes']); // NEW
+Route::get('/print-runs/{run}/codes', [QrController::class, 'listRunCodes']);
 
      // Create/extend an assembly for a parent device
     Route::post('/devices/assemble', [DeviceAssemblyController::class, 'assemble']);
