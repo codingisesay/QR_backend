@@ -91,7 +91,7 @@ Route::middleware(['auth:sanctum','tenant'])->group(function () {
     Route::patch('/products/{id}',  [ProductController::class, 'update'])->middleware('perm:product.write');
     Route::delete('/products/{id}', [ProductController::class, 'destroy'])->middleware('perm:product.write');
 
-    Route::post('/products/{idOrSku}/codes/mint', [QrController::class, 'mintForProduct']);
+    // Route::post('/products/{idOrSku}/codes/mint', [QrController::class, 'mintForProduct']); //this is for minting qr codes for a product
 
       // Bind by scanning a QR token and entering a device UID + attrs
   Route::post('/qr/{token}/bind', [DeviceController::class, 'bindByToken']);
@@ -116,7 +116,17 @@ Route::get('/print-runs/{run}/codes', [QrController::class, 'listRunCodes']);
 
     // (Optional) detach a child device from its parent
     Route::delete('/devices/{deviceUid}/assembly/{childUid}', [DeviceAssemblyController::class, 'detach']);
- 
+
+    
+// ➕ add this to match src/api/qr.js → linkAssembly(parentUid, children)
+Route::post('/devices/{parentUid}/assembly', [DeviceAssemblyController::class, 'assembleByParentUid']);
+
+
+
+// Existing (from your file)
+Route::post('/devices/assemble', [DeviceAssemblyController::class, 'assemble']);
+
+Route::delete('/devices/{deviceUid}/assembly/{childUid}', [DeviceAssemblyController::class, 'detach']);
 
 });
 
