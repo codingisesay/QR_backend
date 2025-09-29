@@ -27,6 +27,23 @@ class QrController extends Controller
     protected function k2ForTenant(int $tenantId): string {
         return hash('sha256', config('app.key').'|k2|'.$tenantId, true);
     }
+    // K3 is distinct from K2: keep secrets compartmentalized
+protected function k3ForTenant(int $tenantId): string {
+    return hash('sha256', config('app.key').'|k3|'.$tenantId, true); // raw bytes
+}
+
+// Make a readable short code from raw bytes (Crockford Base32, no confusing chars)
+protected static function base32Crockford(string $bin, int $len = 13): string {
+    $alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    $bits = '';
+    foreach (str_split($bin) as $c) $bits .= str_pad(decbin(ord($c)), 8, '0', STR_PAD_LEFT);
+    $out = '';
+    for ($i=0; $i+5 <= strlen($bits) && strlen($out) < $len; $i+=5) {
+        $out .= $alphabet[bindec(substr($bits, $i, 5))];
+    }
+    return $out;
+}
+
     protected function verifyBase(): string {
         return config('app.verify_base', 'https://verify.your-domain.com');
     }
@@ -260,6 +277,7 @@ public function mintForProduct(Request $req, $idOrSku)
 
     // Mint ALL codes (for ALL SKUs) with print_run_id = root run
     $k2        = $this->k2ForTenant($tenant->id);
+    $k3        = $this->k3ForTenant($tenant->id);    // micro key 👈
     $baseUrl   = $this->verifyBase();
     $microMode = $data['micro_mode'] ?? 'hmac16';
 
@@ -280,27 +298,51 @@ public function mintForProduct(Request $req, $idOrSku)
                     ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
             } while ($exists);
 
-            $micro = null;
-            if ($microMode === 'hmac16') $micro = substr(hash_hmac('sha256',$token,$k2,true),0,16);
+            $microChk = null; $microCode = null; $wmHash = null;
 
-            $rows[] = [
-                'tenant_id'=>$tenant->id,'token'=>$token,'token_ver'=>1,'status'=>'issued','version'=>1,
-                'product_id'=>(int)$pid,'batch_id'=>$sharedBatchId,'channel_id'=>$channelId,'print_run_id'=>$rootRunId,
-                'micro_chk'=>$micro,'watermark_hash'=>null,'issued_at'=>now(),'activated_at'=>null,'voided_at'=>null,'expires_at'=>null,
-            ];
+               if ($microMode === 'hmac16') {
+        $microRaw  = hash_hmac('sha256', $token, $k3, true);     // 👈 use K3
+        $microChk  = substr($microRaw, 0, 16);                   // fits VARBINARY(16)
+        $microCode = self::base32Crockford(substr($microRaw,0,8), 13); // 13-char code
+
+        $wmRaw  = hash_hmac('sha256', $token, $k2, true);        // 👈 use K2
+        $wmHash = substr($wmRaw, 0, 16);                         // VARBINARY(16)
+    }
+
+    // 3) optional: token_hash for public lookups (add migration below)
+    $tokenHash = hash('sha256', $token);
+
+    $rows[] = [
+  'tenant_id'      => $tenant->id,
+  'token'          => $token,
+  'token_ver'      => 1,
+  'token_hash'     => hash('sha256', $token),                // 👈 add
+  'status'         => 'issued',
+  'version'        => 1,
+  'product_id'     => (int)$pid,
+  'batch_id'       => $sharedBatchId,
+  'channel_id'     => $channelId,
+  'print_run_id'   => $rootRunId,
+
+  'micro_chk'      => $microChk,                             // 👈 now from K3
+  'watermark_hash' => $wmHash,                               // 👈 now set
+  'human_code'     => $microCode,                            // 👈 UI/label short code
+
+  'issued_at'      => now(),
+  'activated_at'   => null,
+  'voided_at'      => null,
+  'expires_at'     => null,
+    ];
         }
+          if ((int)$pid === (int)$product->id) {
+$labelsRoot[] = [
+    'token'      => $token,
+    'url'        => $baseUrl.'/v/'.$token.'?ch='.rawurlencode($data['channel_code']).'&v=1',
+    'micro_code' => $microCode,
+    'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
+];
+    }
         \DB::connection($c)->table('qr_codes_s')->insert($rows);
-
-        // Collect root labels (optional)
-        if ((int)$pid === (int)$product->id) {
-            foreach ($rows as $r) {
-                $labelsRoot[] = [
-                    'token'=>$r['token'],
-                    'url'=>$baseUrl.'/v/'.$r['token'].'?ch='.rawurlencode($data['channel_code']).'&v=1',
-                    'micro_hex'=>$r['micro_chk']?strtoupper(bin2hex($r['micro_chk'])):null,
-                ];
-            }
-        }
 
         // Track for code graph
         $tokensByPid[$pid] = array_column($rows, 'token');
@@ -789,6 +831,172 @@ public function peek(Request $req, string $token) {
     ]);
 }
 
+// public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
+// {
+//     $tenant = app()->bound('tenant') ? app('tenant') : (object)['id' => (int)($req->header('X-Tenant') ?: 1)];
+//     $c  = config('database.connections.domain_shared') ? 'domain_shared' : config('database.default');
+//     $tp = \Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
+//     $qrc= 'qr_codes_s';
+
+//     $hasAsmLinks     = \Schema::connection($c)->hasTable('device_assembly_links_s');
+//     $hasBomTable     = \Schema::connection($c)->hasTable('product_components_s');
+//     $devHasProductId = \Schema::connection($c)->hasTable('devices_s')
+//                         && \Schema::connection($c)->hasColumn('devices_s','product_id');
+
+//     $hasQChannelCode = \Schema::connection($c)->hasColumn($qrc, 'channel_code');
+//     $hasQChannel     = \Schema::connection($c)->hasColumn($qrc, 'channel');
+//     $hasQBatchCode   = \Schema::connection($c)->hasColumn($qrc, 'batch_code');
+//     $hasQBatch       = \Schema::connection($c)->hasColumn($qrc, 'batch');
+//     $hasRunFk        = \Schema::connection($c)->hasColumn($qrc, 'print_run_id');
+//     $hasPrTable      = \Schema::connection($c)->hasTable('print_runs_s');
+//     $prHasBatchCode  = $hasPrTable && \Schema::connection($c)->hasColumn('print_runs_s', 'batch_code');
+//     $prHasBatch      = $hasPrTable && \Schema::connection($c)->hasColumn('print_runs_s', 'batch');
+
+//        $runRootProductId = null;
+//     if ($hasPrTable) {
+//         $runRootProductId = \DB::connection($c)->table('print_runs_s')
+//             ->where('tenant_id', $tenant->id)
+//             ->where('id', (int)$runId)
+//             ->value('product_id');
+//     }
+
+//     // BOM qty column (your migration uses "quantity")
+//     $qtyCol = null;
+//     if ($hasBomTable) {
+//         foreach (['quantity','component_qty','qty','required_qty','units','count'] as $cand) {
+//             if (\Schema::connection($c)->hasColumn('product_components_s', $cand)) { $qtyCol = $cand; break; }
+//         }
+//     }
+
+//     // Assembly child-device column (your migration uses "component_device_id")
+//     $childDevCol = null;
+//     if ($hasAsmLinks) {
+//         foreach (['component_device_id','child_device_id'] as $cand) {
+//             if (\Schema::connection($c)->hasColumn('device_assembly_links_s', $cand)) { $childDevCol = $cand; break; }
+//         }
+//     }
+
+//     // Optional assembly qty column (you don't have one; we’ll COUNT links)
+//     $asmQtyCol = null;
+//     if ($hasAsmLinks) {
+//         foreach (['component_qty_used','qty','quantity','units','count'] as $cand) {
+//             if (\Schema::connection($c)->hasColumn('device_assembly_links_s', $cand)) { $asmQtyCol = $cand; break; }
+//         }
+//     }
+
+//     $q = \DB::connection($c)->table("$qrc as q")
+//         ->leftJoin('device_qr_links_s as l', 'l.qr_code_id', '=', 'q.id')
+//         ->leftJoin('devices_s as d', 'd.id', '=', 'l.device_id')
+//         ->leftJoin("$tp as p", 'p.id', '=', 'q.product_id')
+//         ->where('q.tenant_id', $tenant->id)
+//         ->where('q.print_run_id', $runId);
+
+//     if ($hasRunFk && $hasPrTable && ($prHasBatchCode || $prHasBatch)) {
+//         $q->leftJoin('print_runs_s as pr', 'pr.id', '=', 'q.print_run_id');
+//     }
+
+//     if ($hasAsmLinks) {
+//         $q->leftJoin('device_assembly_links_s as ap', 'ap.parent_device_id', '=', 'd.id'); // parent -> children
+//     }
+//     if ($hasAsmLinks && $childDevCol) {
+//         $q->leftJoin('device_assembly_links_s as ac', "ac.$childDevCol", '=', 'd.id');     // child -> parent
+//         $q->leftJoin('devices_s as dpar', 'dpar.id', '=', 'ac.parent_device_id');
+//         if ($devHasProductId) {
+//             $q->leftJoin("$tp as ppar", 'ppar.id', '=', 'dpar.product_id');
+//         }
+//     }
+
+//     if ($qtyCol) {
+//         $bomTotals = \DB::connection($c)->table('product_components_s')
+//             ->select('parent_product_id', \DB::raw("SUM($qtyCol) as req_total"))
+//             ->groupBy('parent_product_id');
+//         $q->leftJoinSub($bomTotals, 'bom', 'bom.parent_product_id', '=', 'p.id');
+//     }
+
+//     // channel & batch
+//     $channelExpr = $hasQChannelCode ? 'q.channel_code as channel'
+//                  : ($hasQChannel   ? 'q.channel as channel' : 'NULL as channel');
+
+//     $batchExpr   = $hasQBatchCode   ? 'q.batch_code as batch'
+//                  : ($hasQBatch      ? 'q.batch as batch'
+//                  : (($hasRunFk && $hasPrTable && $prHasBatchCode) ? 'pr.batch_code as batch'
+//                  : (($hasRunFk && $hasPrTable && $prHasBatch)     ? 'pr.batch as batch' : 'NULL as batch')));
+
+//     // comp_count (SUM over qty if present, else COUNT links)
+//     $compCountExpr = !$hasAsmLinks
+//         ? '0 as comp_count'
+//         : ($asmQtyCol ? "COALESCE(SUM(ap.$asmQtyCol),0) as comp_count" : "COUNT(ap.id) as comp_count");
+
+//     $select = [
+//         'q.id','q.token',
+//         \Schema::connection($c)->hasColumn($qrc,'status') ? 'q.status' : \DB::raw('NULL as status'),
+//         'q.product_id',
+//         \Schema::connection($c)->hasColumn($qrc,'print_run_id') ? 'q.print_run_id' : \DB::raw('NULL as print_run_id'),
+//         \DB::raw($channelExpr),
+//         \DB::raw($batchExpr),
+
+//         // ✅ ONLY_FULL_GROUP_BY-safe boolean:
+//         \DB::raw('CASE WHEN COUNT(DISTINCT l.id) > 0 THEN 1 ELSE 0 END as is_bound'),
+
+//         'p.sku','p.name',
+//         \Schema::connection($c)->hasColumn($tp,'type') ? 'p.type' : \DB::raw("'standard' as type"),
+//         'd.device_uid',
+//         'dpar.device_uid as parent_device_uid',
+//     ];
+//     $select[] = ($hasAsmLinks && $childDevCol && $devHasProductId) ? 'ppar.sku as parent_sku' : \DB::raw('NULL as parent_sku');
+//     $select[] = \DB::raw($compCountExpr);
+//     $select[] = \DB::raw($qtyCol ? 'COALESCE(bom.req_total,0) as comp_required' : '0 as comp_required');
+
+//     $groupBy = [
+//         'q.id','q.token','q.status','q.product_id','q.print_run_id',
+//         'p.sku','p.name','p.type','d.device_uid','parent_device_uid',
+//     ];
+//     if ($hasAsmLinks && $childDevCol && $devHasProductId) {
+//         $groupBy[] = 'ppar.sku';
+//     }
+
+//     $rows = $q->groupBy($groupBy)->orderBy('q.id')->get($select);
+
+//        // Fallback if the run row wasn't found (legacy/missing row)
+//     if (!$runRootProductId) {
+//         $first = $rows[0] ?? null;
+//         if ($first && isset($first->product_id)) {
+//             $runRootProductId = (int)$first->product_id;
+//         }
+//     }
+
+//     if (!$runRootProductId) {
+//     $first = $rows[0] ?? null;
+//     if ($first && isset($first->product_id)) {
+//         $runRootProductId = (int)$first->product_id;
+//     }
+// }
+
+//     $seq = 0;
+//     foreach ($rows as $r) {
+//         $seq++;
+//         $r->seq_in_run = $seq;
+//         // $r->human_code = $this->humanCode($r->token);
+//         $r->micro_code = isset($r->micro_chk) && $r->micro_chk !== null
+//     ? self::base32Crockford(substr($r->micro_chk,0,8), 13)
+//     : null;
+
+// $r->human_code = $r->micro_code ?: $this->humanCode($r->token); // fallback only
+//         // $r->role = (isset($r->type) && $r->type === 'composite') ? 'parent' : 'part';
+//         // $r->role = ((int)$r->product_id === (int)$r->root_product_id) ? 'parent' : 'part';
+//         $r->role = ((int)$r->product_id === (int)$runRootProductId) ? 'parent' : 'part';        
+//         $r->comp_ok = null;
+//         if ($r->role === 'parent') {
+//             $req = (float)($r->comp_required ?? 0);
+//             $got = (float)($r->comp_count ?? 0);
+//             $r->comp_ok = ($req > 0) ? (abs($got - $req) < 1e-9) : null; // null if no BOM
+//         }
+//         $r->url = null;
+//     }
+
+//     return response()->json(['items' => $rows]);
+// }
+
 public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
 {
     $tenant = app()->bound('tenant') ? app('tenant') : (object)['id' => (int)($req->header('X-Tenant') ?: 1)];
@@ -810,7 +1018,15 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
     $prHasBatchCode  = $hasPrTable && \Schema::connection($c)->hasColumn('print_runs_s', 'batch_code');
     $prHasBatch      = $hasPrTable && \Schema::connection($c)->hasColumn('print_runs_s', 'batch');
 
-       $runRootProductId = null;
+    // Build core expressions (no aliases) for safe aggregation
+    $channelSel = $hasQChannelCode ? 'q.channel_code'
+                : ($hasQChannel   ? 'q.channel' : 'NULL');
+    $batchSel   = $hasQBatchCode   ? 'q.batch_code'
+                : ($hasQBatch      ? 'q.batch'
+                : (($hasRunFk && $hasPrTable && $prHasBatchCode) ? 'pr.batch_code'
+                : (($hasRunFk && $hasPrTable && $prHasBatch)     ? 'pr.batch' : 'NULL')));
+
+    $runRootProductId = null;
     if ($hasPrTable) {
         $runRootProductId = \DB::connection($c)->table('print_runs_s')
             ->where('tenant_id', $tenant->id)
@@ -818,7 +1034,7 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
             ->value('product_id');
     }
 
-    // BOM qty column (your migration uses "quantity")
+    // BOM qty column
     $qtyCol = null;
     if ($hasBomTable) {
         foreach (['quantity','component_qty','qty','required_qty','units','count'] as $cand) {
@@ -826,7 +1042,7 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
         }
     }
 
-    // Assembly child-device column (your migration uses "component_device_id")
+    // Assembly child-device column
     $childDevCol = null;
     if ($hasAsmLinks) {
         foreach (['component_device_id','child_device_id'] as $cand) {
@@ -834,7 +1050,7 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
         }
     }
 
-    // Optional assembly qty column (you don't have one; we’ll COUNT links)
+    // Optional assembly qty column
     $asmQtyCol = null;
     if ($hasAsmLinks) {
         foreach (['component_qty_used','qty','quantity','units','count'] as $cand) {
@@ -852,18 +1068,14 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
     if ($hasRunFk && $hasPrTable && ($prHasBatchCode || $prHasBatch)) {
         $q->leftJoin('print_runs_s as pr', 'pr.id', '=', 'q.print_run_id');
     }
-
     if ($hasAsmLinks) {
         $q->leftJoin('device_assembly_links_s as ap', 'ap.parent_device_id', '=', 'd.id'); // parent -> children
     }
     if ($hasAsmLinks && $childDevCol) {
         $q->leftJoin('device_assembly_links_s as ac', "ac.$childDevCol", '=', 'd.id');     // child -> parent
         $q->leftJoin('devices_s as dpar', 'dpar.id', '=', 'ac.parent_device_id');
-        if ($devHasProductId) {
-            $q->leftJoin("$tp as ppar", 'ppar.id', '=', 'dpar.product_id');
-        }
+        if ($devHasProductId) $q->leftJoin("$tp as ppar", 'ppar.id', '=', 'dpar.product_id');
     }
-
     if ($qtyCol) {
         $bomTotals = \DB::connection($c)->table('product_components_s')
             ->select('parent_product_id', \DB::raw("SUM($qtyCol) as req_total"))
@@ -871,16 +1083,7 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
         $q->leftJoinSub($bomTotals, 'bom', 'bom.parent_product_id', '=', 'p.id');
     }
 
-    // channel & batch
-    $channelExpr = $hasQChannelCode ? 'q.channel_code as channel'
-                 : ($hasQChannel   ? 'q.channel as channel' : 'NULL as channel');
-
-    $batchExpr   = $hasQBatchCode   ? 'q.batch_code as batch'
-                 : ($hasQBatch      ? 'q.batch as batch'
-                 : (($hasRunFk && $hasPrTable && $prHasBatchCode) ? 'pr.batch_code as batch'
-                 : (($hasRunFk && $hasPrTable && $prHasBatch)     ? 'pr.batch as batch' : 'NULL as batch')));
-
-    // comp_count (SUM over qty if present, else COUNT links)
+    // comp_count
     $compCountExpr = !$hasAsmLinks
         ? '0 as comp_count'
         : ($asmQtyCol ? "COALESCE(SUM(ap.$asmQtyCol),0) as comp_count" : "COUNT(ap.id) as comp_count");
@@ -890,11 +1093,19 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
         \Schema::connection($c)->hasColumn($qrc,'status') ? 'q.status' : \DB::raw('NULL as status'),
         'q.product_id',
         \Schema::connection($c)->hasColumn($qrc,'print_run_id') ? 'q.print_run_id' : \DB::raw('NULL as print_run_id'),
-        \DB::raw($channelExpr),
-        \DB::raw($batchExpr),
 
-        // ✅ ONLY_FULL_GROUP_BY-safe boolean:
+        // ✅ aggregate channel/batch so ONLY_FULL_GROUP_BY is happy and no phantom columns
+        \DB::raw("MIN($channelSel) as channel"),
+        \DB::raw("MIN($batchSel)   as batch"),
+
+        // bound flag
         \DB::raw('CASE WHEN COUNT(DISTINCT l.id) > 0 THEN 1 ELSE 0 END as is_bound'),
+
+        // ✅ send text, not binary
+        \Schema::connection($c)->hasColumn($qrc,'human_code') ? 'q.human_code' : \DB::raw('NULL as human_code'),
+        \Schema::connection($c)->hasColumn($qrc,'micro_chk')
+            ? \DB::raw('UPPER(HEX(q.micro_chk)) as micro_hex')
+            : \DB::raw('NULL as micro_hex'),
 
         'p.sku','p.name',
         \Schema::connection($c)->hasColumn($tp,'type') ? 'p.type' : \DB::raw("'standard' as type"),
@@ -905,50 +1116,51 @@ public function listRunCodes(\Illuminate\Http\Request $req, int $runId)
     $select[] = \DB::raw($compCountExpr);
     $select[] = \DB::raw($qtyCol ? 'COALESCE(bom.req_total,0) as comp_required' : '0 as comp_required');
 
+    // GROUP BY: only real columns we select from base tables (aggregates need not be grouped)
     $groupBy = [
         'q.id','q.token','q.status','q.product_id','q.print_run_id',
         'p.sku','p.name','p.type','d.device_uid','parent_device_uid',
+        'q.human_code', // fine to include (functionally depends on q.id anyway)
     ];
-    if ($hasAsmLinks && $childDevCol && $devHasProductId) {
-        $groupBy[] = 'ppar.sku';
-    }
+    if ($hasAsmLinks && $childDevCol && $devHasProductId) $groupBy[] = 'ppar.sku';
 
     $rows = $q->groupBy($groupBy)->orderBy('q.id')->get($select);
 
-       // Fallback if the run row wasn't found (legacy/missing row)
+    // Fallback root product id
     if (!$runRootProductId) {
         $first = $rows[0] ?? null;
-        if ($first && isset($first->product_id)) {
-            $runRootProductId = (int)$first->product_id;
-        }
+        if ($first && isset($first->product_id)) $runRootProductId = (int)$first->product_id;
     }
-
-    if (!$runRootProductId) {
-    $first = $rows[0] ?? null;
-    if ($first && isset($first->product_id)) {
-        $runRootProductId = (int)$first->product_id;
-    }
-}
 
     $seq = 0;
     foreach ($rows as $r) {
         $seq++;
         $r->seq_in_run = $seq;
-        $r->human_code = $this->humanCode($r->token);
-        // $r->role = (isset($r->type) && $r->type === 'composite') ? 'parent' : 'part';
-        // $r->role = ((int)$r->product_id === (int)$r->root_product_id) ? 'parent' : 'part';
-        $r->role = ((int)$r->product_id === (int)$runRootProductId) ? 'parent' : 'part';        
+
+        // Prefer stored human_code; else derive from micro_hex (first 8 bytes)
+        $hc = $r->human_code;
+        if (!$hc && $r->micro_hex) {
+            $first8 = substr($r->micro_hex, 0, 16);      // 8 bytes = 16 hex chars
+            $hc     = self::base32Crockford(hex2bin($first8), 13);
+        }
+        $r->human_code = $hc ? strtoupper($hc) : null;
+        $r->micro_code = $r->human_code; // alias for UI
+
+        $r->role = ((int)$r->product_id === (int)$runRootProductId) ? 'parent' : 'part';
+
         $r->comp_ok = null;
         if ($r->role === 'parent') {
             $req = (float)($r->comp_required ?? 0);
             $got = (float)($r->comp_count ?? 0);
-            $r->comp_ok = ($req > 0) ? (abs($got - $req) < 1e-9) : null; // null if no BOM
+            $r->comp_ok = ($req > 0) ? (abs($got - $req) < 1e-9) : null;
         }
-        $r->url = null;
+
+        $r->url = null; // UI builds it
     }
 
     return response()->json(['items' => $rows]);
 }
+
 
 
 protected function humanCode(string $token): string
