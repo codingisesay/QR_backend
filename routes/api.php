@@ -20,43 +20,7 @@ use App\Http\Controllers\QrController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceAssemblyController;
 use App\Http\Controllers\CompositeQrController;
-// use App\Http\Controllers\QrPreviewController;
-// use App\Http\Controllers\DeviceAssemblyPublicController;
 
-// /* Preview dialog */
-// Route::get('/print-runs/{run}/codes', [QrController::class, 'codesByRun']);
-
-// /* Tree for "Grouped by root" */
-// Route::get('/devices/{deviceUid}/assembly', [DeviceAssemblyController::class, 'show']);
-
-// /* Product → Batches, Batch → Runs */
-// Route::get('/products/{sku}/batches', [QrController::class, 'batchesByProduct']);
-// Route::get('/batches/{batch}/runs', [QrController::class, 'runsByBatch']);
-
-// /* Stats, ZIP */
-// Route::get('/qr/plan-stats', [QrController::class, 'planStats']);
-// Route::get('/products/{sku}/label-stats', [QrController::class, 'labelStats']);
-// Route::get('/print-runs/{run}/qr.zip', [QrController::class, 'downloadZip']);
-
-// /* Composite one-click */
-// Route::post('/qr/composite/mint-assemble', [CompositeQrController::class, 'mintAssemble']);
-
-// Route::prefix('v2')->group(function () {
-//     // Preview tiles
-//     Route::get('/print-runs/{run}/codes', [QrPreviewController::class, 'codesByRun']);
-
-//     // Product → Batches, Batch → Runs
-//     Route::get('/products/{sku}/batches', [QrPreviewController::class, 'batchesByProduct']);
-//     Route::get('/batches/{batch}/runs',   [QrPreviewController::class, 'runsByBatch']);
-
-//     // Stats & ZIP
-//     Route::get('/qr/plan-stats',              [QrPreviewController::class, 'planStats']);
-//     Route::get('/products/{sku}/label-stats', [QrPreviewController::class, 'labelStats']);
-//     Route::get('/print-runs/{run}/qr.zip',    [QrPreviewController::class, 'downloadZip']);
-
-//     // Per-root tree for “Grouped by root”
-//     Route::get('/devices/{deviceUid}/assembly', [DeviceAssemblyPublicController::class, 'show']);
-// });
 
 
 /* -------------------- Health -------------------- */
@@ -127,7 +91,7 @@ Route::middleware(['auth:sanctum','tenant'])->group(function () {
     Route::patch('/products/{id}',  [ProductController::class, 'update'])->middleware('perm:product.write');
     Route::delete('/products/{id}', [ProductController::class, 'destroy'])->middleware('perm:product.write');
 
-    Route::post('/products/{idOrSku}/codes/mint', [QrController::class, 'mintForProduct']);
+    // Route::post('/products/{idOrSku}/codes/mint', [QrController::class, 'mintForProduct']); //this is for minting qr codes for a product
 
       // Bind by scanning a QR token and entering a device UID + attrs
   Route::post('/qr/{token}/bind', [DeviceController::class, 'bindByToken']);
@@ -140,7 +104,9 @@ Route::middleware(['auth:sanctum','tenant'])->group(function () {
 
   Route::get('/products/{idOrSku}/label-stats', [QrController::class, 'labelStats']);
 
-   Route::get('/qr/print-runs/{runId}/codes', [QrController::class, 'listRunCodes']); // NEW
+//    Route::get('/qr/print-runs/{runId}/codes', [QrController::class, 'listRunCodes']); // NEW
+
+Route::get('/print-runs/{run}/codes', [QrController::class, 'listRunCodes']);
 
      // Create/extend an assembly for a parent device
     Route::post('/devices/assemble', [DeviceAssemblyController::class, 'assemble']);
@@ -150,7 +116,17 @@ Route::middleware(['auth:sanctum','tenant'])->group(function () {
 
     // (Optional) detach a child device from its parent
     Route::delete('/devices/{deviceUid}/assembly/{childUid}', [DeviceAssemblyController::class, 'detach']);
- 
+
+    
+// ➕ add this to match src/api/qr.js → linkAssembly(parentUid, children)
+Route::post('/devices/{parentUid}/assembly', [DeviceAssemblyController::class, 'assembleByParentUid']);
+
+
+
+// Existing (from your file)
+Route::post('/devices/assemble', [DeviceAssemblyController::class, 'assemble']);
+
+Route::delete('/devices/{deviceUid}/assembly/{childUid}', [DeviceAssemblyController::class, 'detach']);
 
 });
 
@@ -190,57 +166,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/batches/{batchId}/runs',     [QrController::class, 'runsForBatch']);
 });
 
-// TEMP during development: no auth
-// Route::middleware(['resolve.tenant'])->group(function () {
-//     Route::post('/products/{idOrSku}/codes/mint', [QrController::class, 'mintForProduct']);
-//     Route::get('/print-runs/{printRunId}/qr.zip', [QrController::class, 'exportZip']);
-//     Route::get('/qr/plan-stats', [QrController::class, 'planStats']);
-// });
 
 /* -------------------- Tenant-scoped -------------------- */
 Route::prefix('/t/{tenant}')
     ->middleware(['tenant','auth:sanctum'])
     ->group(function () {
 
-//   Route::get( '/products',        [ProductController::class, 'index'])->middleware('perm:product.read');
-// Route::post('/products',        [ProductController::class, 'store'])->middleware('perm:product.write');
-// Route::patch('/products/{id}',  [ProductController::class, 'update'])->middleware('perm:product.write');
-// Route::delete('/products/{id}', [ProductController::class, 'destroy'])->middleware('perm:product.write');
 
-        // // RBAC
-        // Route::get ('/roles',                      [RbacController::class, 'listRoles'])->middleware('perm:role.read');
-        // Route::post('/roles',                      [RbacController::class, 'createRole'])->middleware('perm:role.write');
-        // Route::post('/roles/{roleId}/permissions', [RbacController::class, 'setRolePermissions'])->middleware('perm:role.write');
-        // Route::post('/users/{userId}/roles',       [RbacController::class, 'assignUserRoles'])->middleware('perm:role.write');
-        // Route::get ('/permissions',                [RbacController::class, 'listPermissions'])->middleware('perm:role.read');
-
-        // // 👇 Create a user inside the tenant (and assign a role)
-        // // Your controller signature: createTenantUser(string $tenant, Request $req)
-        // Route::post('/users', [RegistrationController::class, 'createTenantUser'])
-        //     ->middleware('perm:user.write');
-
-        // // (Optional) Owner-only: buy/renew plan for this tenant (self-serve billing)
-        // // Guard strictly: perm 'tenant.write' OR a custom 'role:owner'.
-        // Route::post('/subscription', [SubscriptionController::class, 'storeTenant'])
-        //     ->middleware('perm:tenant.write');
-
-        // // Dashboard
-        // Route::get('/dashboard', [DashboardController::class, 'summary'])->middleware('perm:dashboard.read');
-
-        // // Products
-        // Route::get   ('/products',          [ProductController::class, 'index'])->middleware('perm:product.read');
-        // Route::get   ('/products/{sku}',    [ProductController::class, 'show'])->middleware('perm:product.read');
-        // Route::post  ('/products',          [ProductController::class, 'store'])->middleware('perm:product.write');
-        // Route::put   ('/products/{sku}',    [ProductController::class, 'update'])->middleware('perm:product.write');
-        // Route::delete('/products/{sku}',    [ProductController::class, 'destroy'])->middleware('perm:product.write');
-
-        // // Comms
-        // Route::post('/comm/queue', [CommController::class, 'enqueue'])->middleware('perm:comm.send');
-        // Route::post('/comm/send',  [CommController::class, 'sendNow'])->middleware('perm:comm.send');
-        // Route::post('/comm/test',  [CommController::class, 'test'])->middleware('perm:comm.send');
-
-        // // Provider configs
-        // Route::get ('/comm/providers',      [CommProviderController::class, 'index'])->middleware('perm:comm.provider.read');
-        // Route::post('/comm/providers',      [CommProviderController::class, 'store'])->middleware('perm:comm.provider.write');
-        // Route::put ('/comm/providers/{id}', [CommProviderController::class, 'update'])->middleware('perm:comm.provider.write');
     });

@@ -8,44 +8,77 @@ use Illuminate\Support\Facades\Schema;
 
 class PublicVerifyController extends Controller
 {
+    /* =========================
+     * Small helpers
+     * ========================= */
+
     protected function sharedConn(): string
     {
+        // Shared-domain DB (your 'domain_shared' connection), else fallback to default
         return config('database.connections.domain_shared') ? 'domain_shared' : config('database.default');
     }
+
     protected function coreConn(): string
     {
-        return config('database.connections.core') ? 'core' : config('database.default');
+        // Core app DB (your 'mysql' in database.php), else fallback to default
+        return config('database.connections.mysql') ? 'mysql' : config('database.default');
     }
 
-    // BOM qty column detector (your migration uses "quantity")
-    protected function bomQtyColumn(string $conn): ?string
+    protected function mask(string $s, int $head = 3, int $tail = 3): ?string
     {
-        $tbl = 'product_components_s';
-        if (!Schema::connection($conn)->hasTable($tbl)) return null;
-        foreach (['quantity','component_qty','qty','required_qty','units','count'] as $c) {
-            if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
+        if ($s === '') return null;
+        return strlen($s) <= $head + $tail ? $s : substr($s, 0, $head) . '•••' . substr($s, -$tail);
+    }
+
+    // Normalize user-provided micro/human code (Crockford Base32; tolerate I/L/O)
+    protected function normalizeMicro(?string $s): string
+    {
+        if ($s === null) return '';
+        $u = strtoupper(preg_replace('/[^0-9A-Z]/', '', $s));
+        return strtr($u, ['I' => '1', 'L' => '1', 'O' => '0']);
+    }
+
+    /* =========================
+     * Tenant resolution (schema-aware)
+     * ========================= */
+
+    protected function tenantSelectableColumns(string $conn): array
+    {
+        $cols = ['id'];
+        foreach (['name','display_name','company_name','org_name','title','slug'] as $c) {
+            if (Schema::connection($conn)->hasColumn('tenants', $c)) $cols[] = $c;
         }
-        return null;
+        return $cols;
     }
 
-    // Assembly child-device column detector (yours is "component_device_id")
-    protected function asmChildDeviceColumn(string $conn): ?string
+    protected function getTenantById(int $id): ?object
     {
-        $tbl = 'device_assembly_links_s';
-        if (!Schema::connection($conn)->hasTable($tbl)) return null;
-        foreach (['component_device_id','child_device_id'] as $c) {
-            if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
+        $core = $this->coreConn();
+        if (!Schema::connection($core)->hasTable('tenants')) {
+            return (object)['id' => $id];
         }
-        return null;
+        $cols = $this->tenantSelectableColumns($core);
+        return DB::connection($core)->table('tenants')->select($cols)->where('id', $id)->first();
     }
 
-    // Assembly qty column (optional; you don’t have one)
-    protected function asmQtyColumn(string $conn): ?string
+    protected function getTenantByKey(string $key): ?object
     {
-        $tbl = 'device_assembly_links_s';
-        if (!Schema::connection($conn)->hasTable($tbl)) return null;
-        foreach (['component_qty_used','qty','quantity','units','count'] as $c) {
-            if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
+        $core = $this->coreConn();
+        if (!Schema::connection($core)->hasTable('tenants')) {
+            return (object)['id' => 1];
+        }
+        $cols = $this->tenantSelectableColumns($core);
+        $q = DB::connection($core)->table('tenants')->select($cols);
+        if (ctype_digit($key)) return $q->where('id', (int)$key)->first();
+
+        if (Schema::connection($core)->hasColumn('tenants', 'slug')) {
+            return $q->where('slug', $key)->first();
+        }
+        if (Schema::connection($core)->hasColumn('tenants', 'name')) {
+            return $q->where('name', $key)->first();
+        }
+        if (Schema::connection($core)->hasColumn('tenants', 'title')) {
+            return $q->where('title', $key)->first();
         }
         return null;
     }
@@ -57,31 +90,25 @@ class PublicVerifyController extends Controller
             return (object)['id' => 1, 'slug' => 'dev'];
         }
 
-        if ($tenantKey) {
-            $q = DB::connection($core)->table('tenants');
-            return ctype_digit($tenantKey) ? $q->where('id', (int)$tenantKey)->first()
-                                           : $q->where('slug', $tenantKey)->first();
-        }
+        if ($tenantKey) return $this->getTenantByKey($tenantKey);
 
+        // subdomain
         $host = $req->getHost();
         if ($host && strpos($host, '.') !== false) {
             $maybe = explode('.', $host)[0];
             if ($maybe && $maybe !== 'www' && $maybe !== 'localhost') {
-                $hit = DB::connection($core)->table('tenants')->where('slug', $maybe)->first();
-                if ($hit) return $hit;
+                if ($hit = $this->getTenantByKey($maybe)) return $hit;
             }
         }
 
+        // ?t=
         if ($t = $req->query('t')) {
-            $q = DB::connection($core)->table('tenants');
-            return ctype_digit($t) ? $q->where('id', (int)$t)->first()
-                                   : $q->where('slug', $t)->first();
+            if ($hit = $this->getTenantByKey($t)) return $hit;
         }
 
+        // X-Tenant header
         if ($hdr = $req->header('X-Tenant')) {
-            $q = DB::connection($core)->table('tenants');
-            return ctype_digit($hdr) ? $q->where('id', (int)$hdr)->first()
-                                     : $q->where('slug', $hdr)->first();
+            if ($hit = $this->getTenantByKey($hdr)) return $hit;
         }
 
         return (object)['id' => 1, 'slug' => 'dev'];
@@ -92,15 +119,100 @@ class PublicVerifyController extends Controller
         $shared = $this->sharedConn();
         if (!Schema::connection($shared)->hasTable('qr_codes_s')) return null;
 
-        $row = DB::connection($shared)->table('qr_codes_s')->where('token', $token)->first(['tenant_id']);
+        $row = DB::connection($shared)->table('qr_codes_s')
+            ->where('token', $token)
+            ->first(['tenant_id']);
+
         if (!$row || !$row->tenant_id) return null;
 
-        $core = $this->coreConn();
-        if (!Schema::connection($core)->hasTable('tenants')) {
-            return (object)['id' => $row->tenant_id];
-        }
-        return DB::connection($core)->table('tenants')->where('id', $row->tenant_id)->first();
+        return $this->getTenantById((int) $row->tenant_id);
     }
+
+    protected function resolveTenantForVerify(Request $req, string $token): object
+    {
+        // Prefer simple deterministic source: token → tenant
+        if ($byToken = $this->findTenantByToken($token)) return $byToken;
+
+        // Already bound via middleware/subdomain?
+        if (app()->bound('tenant') && app('tenant')) return app('tenant');
+
+        // Public resolvers
+        if ($t = $this->resolvePublicTenant($req)) return $t;
+
+        // Fallback
+        return (object)['id' => (int)($req->header('X-Tenant') ?: 1)];
+    }
+
+    /* =========================
+     * Verify endpoints
+     * ========================= */
+
+    public function verify(Request $req, string $token)
+    {
+        // 1) Resolve tenant from token (simple and correct)
+        $tenantObj = $this->resolveTenantForVerify($req, $token);
+        $tenantId  = (int)($tenantObj->id ?? 0);
+
+        // 2) Build payload for this tenant
+        $payload = $this->buildVerifyPayload($tenantId, $token);
+
+        // 3) If not found, retry by token (paranoia; normally unnecessary)
+        if (empty($payload['found'])) {
+            if ($byToken = $this->findTenantByToken($token)) {
+                $tenantObj = $byToken;
+                $tenantId  = (int)$tenantObj->id;
+                $payload   = $this->buildVerifyPayload($tenantId, $token);
+            }
+        }
+
+        // 4) Mask token for public page
+        $payload['token_masked'] = $this->mask($token);
+
+        // 5) Micro check (optional ?hc= or header)
+        $storedHC   = strtoupper((string)($payload['human_code'] ?? ''));
+        $providedHC = $this->normalizeMicro($req->query('hc', $req->query('m', $req->header('X-Micro-Code'))));
+        $matched    = ($providedHC !== '' && $storedHC !== '' && hash_equals($storedHC, $providedHC));
+
+        $payload['micro'] = [
+            'checked'         => $providedHC !== '',
+            'matched'         => $matched,
+            'expected_masked' => $this->mask($storedHC),
+            'provided_masked' => $this->mask($providedHC),
+        ];
+
+        return view('verify', [
+            'data'   => $this->withDefaults($payload),
+            'tenant' => $tenantObj,
+        ]);
+    }
+
+    // Optional multi-tenant path: /tenant/{slug}/v/{token}
+    public function verifyWithTenant(Request $req, $tenant, string $token)
+    {
+        $tenantObj = $this->resolvePublicTenant($req, (string)$tenant) ?? (object)['id'=>1];
+        $payload   = $this->buildVerifyPayload((int)$tenantObj->id, $token);
+
+        $payload['token_masked'] = $this->mask($token);
+        $storedHC   = strtoupper((string)($payload['human_code'] ?? ''));
+        $providedHC = $this->normalizeMicro($req->query('hc', $req->query('m', $req->header('X-Micro-Code'))));
+        $matched    = ($providedHC !== '' && $storedHC !== '' && hash_equals($storedHC, $providedHC));
+
+        $payload['micro'] = [
+            'checked'         => $providedHC !== '',
+            'matched'         => $matched,
+            'expected_masked' => $this->mask($storedHC),
+            'provided_masked' => $this->mask($providedHC),
+        ];
+
+        return view('verify', [
+            'data'   => $this->withDefaults($payload),
+            'tenant' => $tenantObj,
+        ]);
+    }
+
+    /* =========================
+     * Payload builder
+     * ========================= */
 
     protected function buildVerifyPayload(int $tenantId, string $token): array
     {
@@ -112,7 +224,10 @@ class PublicVerifyController extends Controller
             return ['found' => false, 'reason' => 'QR table missing'];
         }
 
-        $q = DB::connection($c)->table("$qrc as q")->where('q.tenant_id', $tenantId)->where('q.token', $token);
+        $q = DB::connection($c)->table("$qrc as q")
+            ->where('q.tenant_id', $tenantId)
+            ->where('q.token', $token);
+
         $q->leftJoin('device_qr_links_s as l', 'l.qr_code_id', '=', 'q.id');
         $q->leftJoin('devices_s as d', 'd.id', '=', 'l.device_id');
         $q->leftJoin("$tp as p", 'p.id', '=', 'q.product_id');
@@ -123,21 +238,45 @@ class PublicVerifyController extends Controller
             'q.product_id',
             Schema::connection($c)->hasColumn($qrc,'print_run_id') ? 'q.print_run_id' : DB::raw("NULL as print_run_id"),
             Schema::connection($c)->hasColumn($qrc,'channel_code') ? DB::raw('q.channel_code as channel') :
-            (Schema::connection($c)->hasColumn($qrc,'channel') ? DB::raw('q.channel as channel') : DB::raw('NULL as channel')),
+                (Schema::connection($c)->hasColumn($qrc,'channel') ? DB::raw('q.channel as channel') : DB::raw('NULL as channel')),
             Schema::connection($c)->hasColumn($qrc,'batch_code') ? DB::raw('q.batch_code as batch') :
-            (Schema::connection($c)->hasColumn($qrc,'batch') ? DB::raw('q.batch as batch') : DB::raw('NULL as batch')),
+                (Schema::connection($c)->hasColumn($qrc,'batch') ? DB::raw('q.batch as batch') : DB::raw('NULL as batch')),
+
+            // ✅ include HC + text-safe micro
+            Schema::connection($c)->hasColumn($qrc,'human_code') ? 'q.human_code' : DB::raw('NULL as human_code'),
+            Schema::connection($c)->hasColumn($qrc,'micro_chk')  ? DB::raw('UPPER(HEX(q.micro_chk)) as micro_hex') : DB::raw('NULL as micro_hex'),
+
             'p.id as __pid','p.sku','p.name',
-            Schema::connection($c)->hasColumn($tp,'type') ? 'p.type' : DB::raw("'standard' as type"),
+            Schema::connection($c)->hasColumn($tp,'type')   ? 'p.type' : DB::raw("'standard' as type"),
             Schema::connection($c)->hasColumn($tp,'status') ? 'p.status as p_status' : DB::raw('NULL as p_status'),
             'd.id as __did','d.device_uid',
             Schema::connection($c)->hasColumn('devices_s','attrs_json') ? 'd.attrs_json' : DB::raw('NULL as attrs_json'),
-            Schema::connection($c)->hasColumn('devices_s','status') ? 'd.status as d_status' : DB::raw('NULL as d_status'),
+            Schema::connection($c)->hasColumn('devices_s','status')     ? 'd.status as d_status' : DB::raw('NULL as d_status'),
             Schema::connection($c)->hasColumn('devices_s','created_at') ? 'd.created_at' : DB::raw('NULL as created_at'),
             Schema::connection($c)->hasColumn('devices_s','product_id') ? 'd.product_id as d_pid' : DB::raw('NULL as d_pid'),
         ];
 
         $qr = $q->first($sel);
         if (!$qr) return ['found' => false, 'reason' => 'Token not found'];
+
+        // Ensure a proper 12-char HC (prefer stored; else derive from micro_hex)
+        $humanCode = $qr->human_code;
+        if (!$humanCode && $qr->micro_hex) {
+            $hex = strtoupper(preg_replace('/[^0-9A-F]/', '', $qr->micro_hex));
+            if (strlen($hex) >= 16) {
+                $bytes = hex2bin(substr($hex, 0, 16)); // first 8 bytes
+                if ($bytes !== false) {
+                    $alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+                    $bits = '';
+                    foreach (str_split($bytes) as $ch) $bits .= str_pad(decbin(ord($ch)), 8, '0', STR_PAD_LEFT);
+                    $out = '';
+                    for ($i = 0; $i + 5 <= strlen($bits) && strlen($out) < 12; $i += 5) {
+                        $out .= $alphabet[bindec(substr($bits, $i, 5))];
+                    }
+                    $humanCode = $out ?: null; // 8 bytes -> 12 chars
+                }
+            }
+        }
 
         $product = $qr->__pid ? [
             'id'     => $qr->__pid,
@@ -162,7 +301,7 @@ class PublicVerifyController extends Controller
             ];
         }
 
-        // Components + BOM coverage (only if parent device exists)
+        // Optional: components + BOM coverage (kept as in your original)
         $components = [];
         $bomCoverage = null;
 
@@ -222,10 +361,10 @@ class PublicVerifyController extends Controller
                 $required = [];
                 foreach ($reqRows as $r) $required[(int)$r->child_product_id] = (float)$r->qty;
 
-                // current: group by child product id (via dch.product_id since your assembly table lacks child_product_id)
+                // current: group by child product id (via dch.product_id since assembly table lacks child_product_id)
                 $curExpr = $asmQtyCol ? "SUM($asmQtyCol)" : "COUNT(*)";
                 $curQ = DB::connection($c)->table('device_assembly_links_s as a')
-                    ->leftJoin('devices_s as dch', 'dch.id', '=', $childCol ? "a.$childCol" : 'a.parent_device_id') // safe fallback
+                    ->leftJoin('devices_s as dch', 'dch.id', '=', $childCol ? "a.$childCol" : 'a.parent_device_id')
                     ->where(['a.tenant_id'=>$tenantId,'a.parent_device_id'=>$device['id']]);
 
                 if ($devHasPid) {
@@ -249,19 +388,24 @@ class PublicVerifyController extends Controller
         }
 
         return [
-            'found'     => true,
-            'status'    => $qr->status,
-            'token'     => $qr->token,
-            'channel'   => $qr->channel,
-            'batch'     => $qr->batch,
-            'print_run' => $qr->print_run_id ?? null,
-            'product'   => $product ? [
+            'found'       => true,
+            'status'      => $qr->status,
+            'token'       => $qr->token,
+            'channel'     => $qr->channel,
+            'batch'       => $qr->batch,
+            'print_run'   => $qr->print_run_id ?? null,
+
+            // expose HC + micro_hex for the verify page; HC is the 12-char code (stored or derived)
+            'human_code'  => $humanCode,
+            'micro_hex'   => $qr->micro_hex,
+
+            'product'     => $product ? [
                 'sku'    => $product['sku'],
                 'name'   => $product['name'],
                 'type'   => $product['type'],
                 'status' => $product['status'],
             ] : null,
-            'device'    => $device ? [
+            'device'      => $device ? [
                 'device_uid' => $device['device_uid'],
                 'status'     => $device['status'],
                 'attrs'      => $device['attrs'],
@@ -272,34 +416,40 @@ class PublicVerifyController extends Controller
         ];
     }
 
-    protected function withDefaults(array $p): array
-    {
-        return array_merge([
-            'found'=>false,'reason'=>null,'status'=>null,'token'=>null,
-            'channel'=>null,'batch'=>null,'print_run'=>null,
-            'product'=>null,'device'=>null,'components'=>[], 'bom_coverage'=>null,
-        ], $p);
-    }
+    /* =========================
+     * Minor helpers used above
+     * ========================= */
 
-    public function verify(Request $req, string $token)
+    protected function asmChildDeviceColumn(string $conn): ?string
     {
-        $tenant  = $this->resolvePublicTenant($req, null);
-        $payload = $this->buildVerifyPayload($tenant->id, $token);
-
-        if (!$payload['found']) {
-            if ($tkTenant = $this->findTenantByToken($token)) {
-                $tenant  = $tkTenant;
-                $payload = $this->buildVerifyPayload($tenant->id, $token);
-            }
+        if (!Schema::connection($conn)->hasTable('device_assembly_links_s')) return null;
+        foreach (['component_device_id','child_device_id'] as $c) {
+            if (Schema::connection($conn)->hasColumn('device_assembly_links_s', $c)) return $c;
         }
-
-        return view('verify', ['data' => $this->withDefaults($payload), 'tenant' => $tenant]);
+        return null;
     }
 
-    public function verifyWithTenant(Request $req, $tenant, string $token)
+    protected function asmQtyColumn(string $conn): ?string
     {
-        $tenantObj = $this->resolvePublicTenant($req, (string)$tenant);
-        $payload   = $this->buildVerifyPayload($tenantObj->id, $token);
-        return view('verify', ['data' => $this->withDefaults($payload), 'tenant' => $tenantObj]);
+        if (!Schema::connection($conn)->hasTable('device_assembly_links_s')) return null;
+        foreach (['component_qty_used','qty','quantity','units','count'] as $c) {
+            if (Schema::connection($conn)->hasColumn('device_assembly_links_s', $c)) return $c;
+        }
+        return null;
+    }
+
+    protected function bomQtyColumn(string $conn): ?string
+    {
+        if (!Schema::connection($conn)->hasTable('product_components_s')) return null;
+        foreach (['quantity','component_qty','qty','required_qty','units','count'] as $c) {
+            if (Schema::connection($conn)->hasColumn('product_components_s', $c)) return $c;
+        }
+        return null;
+    }
+
+    protected function withDefaults(array $payload): array
+    {
+        // Keep as a passthrough or add default keys if you like.
+        return $payload;
     }
 }

@@ -8,236 +8,289 @@ use Illuminate\Support\Facades\Schema;
 
 class DeviceAssemblyController extends Controller
 {
-    /** Pick the multitenant (shared) connection */
+    /* ============================================================
+     | Helpers (tenant + connection + table/column detection)
+     |============================================================ */
+
+    /** Choose the shared/tenant DB connection (matches your other controllers). */
+    protected function sharedConn(): string
+    {
+        // If you've configured 'domain_shared', use it; else fall back to default
+        return config('database.connections.domain_shared') ? 'domain_shared'
+                                                           : config('database.default');
+    }
+
+    /** Backwards-compat alias (prevents "undefined method shared()" crashes). */
     protected function shared(): string
     {
-        return config('database.connections.domain_shared') ? 'domain_shared' : config('database.default');
+        return $this->sharedConn();
     }
 
-    /** Pick the core connection (where tenants table usually lives) */
-    protected function core(): string
-    {
-        return config('database.connections.core') ? 'core' : config('database.default');
-    }
-
-    /** Resolve tenant id from bound tenant, header, or default=1 */
+    /** Resolve tenant id (works with ResolveTenant middleware or X-Tenant header). */
     protected function tenantId(Request $req): int
     {
-        if (app()->bound('tenant') && app('tenant')?->id) return (int) app('tenant')->id;
-        if ($h = $req->header('X-Tenant')) return ctype_digit($h) ? (int)$h : 1;
-        if ($q = $req->query('t')) return ctype_digit($q) ? (int)$q : 1;
-        return 1;
+        // Prefer middleware-injected tenant (app('tenant'))
+        if (app()->bound('tenant') && app('tenant')?->id) {
+            return (int) app('tenant')->id;
+        }
+        // Fallback to header or query param
+        if ($h = $req->header('X-Tenant')) return ctype_digit($h) ? (int) $h : 0;
+        if ($q = $req->query('t'))        return ctype_digit($q) ? (int) $q : 0;
+        return 0; // force 400 if not resolved
     }
 
-    /** Detect columns (schema-safe helpers) */
-    protected function detectChildDeviceCol(string $conn): ?string
+    /** Prefer products_s if present. */
+    protected function productTable(string $conn): string
+    {
+        return Schema::connection($conn)->hasTable('products_s') ? 'products_s' : 'products';
+    }
+
+    /** Detect child column name in device_assembly_links_s (component_device_id vs child_device_id). */
+    protected function detectChildDeviceCol(string $conn): string
     {
         $tbl = 'device_assembly_links_s';
-        if (!Schema::connection($conn)->hasTable($tbl)) return null;
+        if (!Schema::connection($conn)->hasTable($tbl)) return 'component_device_id';
         foreach (['component_device_id','child_device_id'] as $c) {
             if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
         }
-        return null;
+        return 'component_device_id';
     }
-    protected function detectAsmQtyCol(string $conn): ?string
-    {
-        $tbl = 'device_assembly_links_s';
-        if (!Schema::connection($conn)->hasTable($tbl)) return null;
-        foreach (['component_qty_used','qty','quantity','units','count'] as $c) {
-            if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
-        }
-        return null;
-    }
+
+    /** Optionally detect BOM qty column (if you later show BOM coverage). */
     protected function detectBomQtyCol(string $conn): ?string
     {
         $tbl = 'product_components_s';
         if (!Schema::connection($conn)->hasTable($tbl)) return null;
-        foreach (['quantity','component_qty','qty','required_qty','units','count'] as $c) {
+        foreach (['quantity','qty','units','count'] as $c) {
             if (Schema::connection($conn)->hasColumn($tbl, $c)) return $c;
         }
         return null;
     }
 
+    /* ============================================================
+     | Endpoints
+     |============================================================ */
+
     /**
-     * GET /devices/{deviceUid}/assembly[?with_qr=1]
-     *
-     * Returns:
-     * {
-     *   parent: { device_uid, product_id, sku, name },
-     *   children: [{ sku, name, device_uid, qty, qr_token?, qr_channel? }],
-     *   coverage: { required:[{child_product_id, sku, name, qty}], current:[{child_product_id, sku, name, qty}], ok }
-     * }
+     * POST /api/devices/assemble
+     * Body: { "parent": "BIKE-0001", "children": ["ENGINE-0001","TIREF-0001","TIRER-0001"] }
+     * Idempotently links child devices under the parent device.
      */
-    public function getAssembly(Request $req, string $deviceUid)
+    public function assemble(Request $req)
     {
         $tenantId = $this->tenantId($req);
-        $c   = $this->shared();
-        $tp  = Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
-        $withQr = (bool) $req->boolean('with_qr', false);
+        if ($tenantId <= 0) return response()->json(['message' => 'Tenant not resolved'], 400);
 
-        // Ensure required tables exist
-        foreach (['devices_s', $tp] as $t) {
-            if (!Schema::connection($c)->hasTable($t)) {
-                return response()->json(['message' => "Missing table: $t"], 422);
-            }
+        $c = $this->sharedConn();
+
+        if (!Schema::connection($c)->hasTable('devices_s') ||
+            !Schema::connection($c)->hasTable('device_assembly_links_s')) {
+            return response()->json(['message' => 'Device tables not present'], 500);
         }
 
-        // 1) Load parent device and its product
-        $devCols = ['id','tenant_id','device_uid'];
-        if (Schema::connection($c)->hasColumn('devices_s','product_id')) $devCols[] = 'product_id';
+        $data = $req->validate([
+            'parent'     => ['required', 'string', 'max:191'],
+            'children'   => ['required', 'array', 'min:1'],
+            'children.*' => ['string', 'max:191'],
+        ]);
 
-        $parent = DB::connection($c)->table('devices_s')
+        $parentUid = $data['parent'];
+        $parentId = DB::connection($c)->table('devices_s')
             ->where('tenant_id', $tenantId)
-            ->where('device_uid', $deviceUid)
-            ->first($devCols);
+            ->where('device_uid', $parentUid)
+            ->value('id');
 
-        if (!$parent) {
-            return response()->json(['message' => 'Device not found'], 404);
+        if (!$parentId) {
+            return response()->json(['message' => 'Parent device not found'], 404);
         }
 
-        $parentProduct = null;
-        if (!empty($parent->product_id)) {
-            $parentProduct = DB::connection($c)->table($tp)->where('id', $parent->product_id)->first(['id','sku','name']);
-        }
+        $childCol = $this->detectChildDeviceCol($c);
+        $linked = [];
+        $missing = [];
 
-        // 2) Pull children
-        if (!Schema::connection($c)->hasTable('device_assembly_links_s')) {
-            // No assembly table — return parent only
-            return response()->json([
-                'parent'   => [
-                    'device_uid'  => $parent->device_uid,
-                    'product_id'  => $parentProduct->id  ?? null,
-                    'sku'         => $parentProduct->sku ?? null,
-                    'name'        => $parentProduct->name?? null,
-                ],
-                'children' => [],
-                'coverage' => null,
-            ]);
-        }
+        foreach ($data['children'] as $childUid) {
+            $childId = DB::connection($c)->table('devices_s')
+                ->where('tenant_id', $tenantId)
+                ->where('device_uid', $childUid)
+                ->value('id');
 
-        $childDevCol = $this->detectChildDeviceCol($c) ?: 'component_device_id'; // default to your schema name
-        $asmQtyCol   = $this->detectAsmQtyCol($c);
-        $devHasPid   = Schema::connection($c)->hasColumn('devices_s','product_id');
-        $asmHasChildPid = Schema::connection($c)->hasColumn('device_assembly_links_s','child_product_id');
+            if (!$childId) { $missing[] = $childUid; continue; }
 
-        $childrenQ = DB::connection($c)->table('device_assembly_links_s as a')
-            ->leftJoin('devices_s as dch', 'dch.id', '=', "a.$childDevCol")
-            ->where('a.tenant_id', $tenantId)
-            ->where('a.parent_device_id', $parent->id);
+            DB::connection($c)->table('device_assembly_links_s')->updateOrInsert(
+                ['tenant_id' => $tenantId, 'parent_device_id' => $parentId, $childCol => $childId],
+                ['updated_at' => now()]
+            );
 
-        // Attach child product
-        if ($asmHasChildPid) {
-            $childrenQ->leftJoin("$tp as pch", 'pch.id', '=', 'a.child_product_id');
-            $skuExpr  = 'pch.sku';  $nameExpr = 'pch.name'; $pidExpr = 'pch.id';
-        } elseif ($devHasPid) {
-            $childrenQ->leftJoin("$tp as pch", 'pch.id', '=', 'dch.product_id');
-            $skuExpr  = 'pch.sku';  $nameExpr = 'pch.name'; $pidExpr = 'pch.id';
-        } else {
-            $skuExpr  = "NULL";     $nameExpr = "NULL";     $pidExpr = "NULL";
-        }
-
-        // Attach QR token/channel (optional)
-        if ($withQr) {
-            $childrenQ->leftJoin('device_qr_links_s as l', 'l.device_id', '=', "dch.id")
-                      ->leftJoin('qr_codes_s as q', 'q.id', '=', 'l.qr_code_id');
-            $chanExpr = Schema::connection($c)->hasColumn('qr_codes_s','channel_code')
-                ? 'q.channel_code'
-                : (Schema::connection($c)->hasColumn('qr_codes_s','channel') ? 'q.channel' : 'NULL');
-        }
-
-        $select = [
-            DB::raw("$pidExpr as child_product_id"),
-            DB::raw("$skuExpr as sku"),
-            DB::raw("$nameExpr as name"),
-            'dch.device_uid',
-            $asmQtyCol ? DB::raw("a.$asmQtyCol as qty") : DB::raw('1 as qty'),
-        ];
-        if ($withQr) {
-            $select[] = DB::raw('q.token as qr_token');
-            $select[] = DB::raw("$chanExpr as qr_channel");
-        }
-
-        $links = $childrenQ->get($select)->map(function ($r) {
-            return [
-                'child_product_id' => $r->child_product_id,
-                'sku'              => $r->sku,
-                'name'             => $r->name,
-                'device_uid'       => $r->device_uid,
-                'qty'              => (float) $r->qty,
-                'qr_token'         => $r->qr_token ?? null,
-                'qr_channel'       => $r->qr_channel ?? null,
-            ];
-        })->all();
-
-        // 3) BOM coverage (required vs current)
-        $coverage = null;
-        $qtyCol = $this->detectBomQtyCol($c); // "quantity" in your migration
-        if ($qtyCol && $parentProduct?->id) {
-            // required
-            $reqRows = DB::connection($c)->table('product_components_s as pc')
-                ->leftJoin("$tp as cp", 'cp.id', '=', 'pc.child_product_id')
-                ->where('pc.tenant_id', $tenantId)
-                ->where('pc.parent_product_id', $parentProduct->id)
-                ->groupBy('pc.child_product_id', 'cp.sku', 'cp.name')
-                ->get([
-                    'pc.child_product_id',
-                    'cp.sku',
-                    'cp.name',
-                    DB::raw("SUM(pc.$qtyCol) as qty")
-                ]);
-
-            // current (what's assembled to this device)
-            // if assembly has child_product_id use it; else derive via dch.product_id
-            $curQ = DB::connection($c)->table('device_assembly_links_s as a')
-                ->leftJoin('devices_s as dch', 'dch.id', '=', "a.$childDevCol")
-                ->where('a.tenant_id', $tenantId)
-                ->where('a.parent_device_id', $parent->id);
-
-            $curSelectPid = $asmHasChildPid ? 'a.child_product_id' : ($devHasPid ? 'dch.product_id' : 'NULL');
-            $curQ->leftJoin("$tp as cp", 'cp.id', '=', DB::raw($curSelectPid)); // safe if NULL
-            $curExpr = $asmQtyCol ? "SUM(a.$asmQtyCol)" : "COUNT(*)";
-
-            $curRows = $curQ->groupBy(DB::raw($curSelectPid), 'cp.sku', 'cp.name')->get([
-                DB::raw("$curSelectPid as child_product_id"),
-                'cp.sku',
-                'cp.name',
-                DB::raw("$curExpr as qty"),
-            ]);
-
-            $reqMap = [];
-            foreach ($reqRows as $r) {
-                if (!$r->child_product_id) continue;
-                $reqMap[(int)$r->child_product_id] = ['sku'=>$r->sku, 'name'=>$r->name, 'qty'=>(float)$r->qty];
-            }
-
-            $curMap = [];
-            foreach ($curRows as $r) {
-                if (!$r->child_product_id) continue;
-                $curMap[(int)$r->child_product_id] = ['sku'=>$r->sku, 'name'=>$r->name, 'qty'=>(float)$r->qty];
-            }
-
-            $ok = true;
-            foreach ($reqMap as $pid => $req) {
-                $have = $curMap[$pid]['qty'] ?? 0;
-                if (abs($have - $req['qty']) > 1e-9) { $ok = false; break; }
-            }
-
-            $coverage = [
-                'required' => array_map(fn($pid, $v) => ['child_product_id'=>$pid,'sku'=>$v['sku'],'name'=>$v['name'],'qty'=>$v['qty']], array_keys($reqMap), $reqMap),
-                'current'  => array_map(fn($pid, $v) => ['child_product_id'=>$pid,'sku'=>$v['sku'],'name'=>$v['name'],'qty'=>$v['qty']], array_keys($curMap), $curMap),
-                'ok'       => $ok,
-            ];
+            $linked[] = $childUid;
         }
 
         return response()->json([
-            'parent'   => [
-                'device_uid'  => $parent->device_uid,
-                'product_id'  => $parentProduct->id  ?? null,
-                'sku'         => $parentProduct->sku ?? null,
-                'name'        => $parentProduct->name?? null,
-            ],
-            'children' => $links,
-            'coverage' => $coverage,
+            'parent'  => $parentUid,
+            'linked'  => $linked,
+            'missing' => $missing,
         ]);
+    }
+
+    /**
+     * POST /api/devices/{parentUid}/assembly
+     * Body: { "children": [...] }
+     * Wrapper so your UI can call path-style endpoint.
+     */
+    public function assembleByParentUid(Request $req, string $parentUid)
+    {
+        // Reuse the same validation/logic by mapping to assemble()
+        $req->merge(['parent' => $parentUid]);
+        return $this->assemble($req);
+    }
+
+    
+
+    public function getAssembly(Request $req, string $deviceUid)
+{
+    $tenantId = $this->tenantId($req);
+    if ($tenantId <= 0) {
+        return response()->json(['message' => 'Tenant not resolved'], 400);
+    }
+
+    $c  = $this->sharedConn();
+    $tp = $this->productTable($c);
+    $withQr = $req->boolean('with_qr', true);
+
+    if (!Schema::connection($c)->hasTable('devices_s')) {
+        return response()->json(['message' => 'Missing table: devices_s'], 500);
+    }
+
+    $dev = DB::connection($c)->table('devices_s')
+        ->where('tenant_id', $tenantId)
+        ->where('device_uid', $deviceUid)
+        ->first(['id', 'product_id', 'device_uid']);
+
+    if (!$dev) {
+        return response()->json(['message' => 'Device not found'], 404);
+    }
+
+    // Detect child column (component_device_id vs child_device_id)
+    $childCol = $this->detectChildDeviceCol($c);
+
+    // Parent (if any)
+    $parentUid = null;
+    if (Schema::connection($c)->hasTable('device_assembly_links_s')) {
+        $parentUid = DB::connection($c)->table('device_assembly_links_s as l')
+            ->join('devices_s as p', 'p.id', '=', 'l.parent_device_id')
+            ->where('l.tenant_id', $tenantId)
+            ->where("l.$childCol", $dev->id)
+            ->value('p.device_uid');
+    }
+
+    // ---- N-level descendants (BFS) ----
+    $children = [];
+    if (Schema::connection($c)->hasTable('device_assembly_links_s')) {
+        $frontier = [$dev->id];
+        $visited  = [];
+        $descIds  = [];
+
+        while ($frontier) {
+            $links = DB::connection($c)->table('device_assembly_links_s')
+                ->where('tenant_id', $tenantId)
+                ->whereIn('parent_device_id', $frontier)
+                ->pluck($childCol)
+                ->all();
+
+            $next = [];
+            foreach ($links as $cid) {
+                $cid = (int)$cid;
+                if (isset($visited[$cid])) continue;
+                $visited[$cid] = true;
+                $descIds[] = $cid;
+                $next[] = $cid;
+            }
+            $frontier = $next;
+        }
+
+        if ($descIds) {
+            $rows = DB::connection($c)->table('devices_s as d')
+                ->leftJoin("$tp as p", 'p.id', '=', 'd.product_id')
+                ->where('d.tenant_id', $tenantId)
+                ->whereIn('d.id', $descIds)
+                ->get(['d.id','d.device_uid','p.sku','p.name']);
+
+            $children = $rows->map(function ($r) use ($tenantId, $c, $withQr) {
+                $row = [
+                    'device_uid' => $r->device_uid,
+                    'sku'        => $r->sku,
+                    'name'       => $r->name,
+                ];
+
+                if ($withQr &&
+                    Schema::connection($c)->hasTable('device_qr_links_s') &&
+                    Schema::connection($c)->hasTable('qr_codes_s')) {
+
+                    $qr = DB::connection($c)->table('device_qr_links_s as l')
+                        ->join('qr_codes_s as q', 'q.id', '=', 'l.qr_code_id')
+                        ->leftJoin('qr_channels_s as ch', 'ch.id', '=', 'q.channel_id')
+                        ->join('devices_s as d', 'd.id', '=', 'l.device_id')
+                        ->where('l.tenant_id', $tenantId)
+                        ->where('d.device_uid', $r->device_uid)
+                        ->orderByDesc('q.id')
+                        ->first(['q.token', 'ch.code as channel_code']);
+
+                    if ($qr) {
+                        $row['qr_token']   = $qr->token;
+                        $row['qr_channel'] = $qr->channel_code ?: null;
+                    }
+                }
+
+                return $row;
+            })->values()->all();
+        }
+    }
+
+    return response()->json([
+        'device_uid' => $dev->device_uid,
+        'parent'     => $parentUid,
+        // NOTE: children = all descendants (flattened) so the UI shows every part under the root
+        'children'   => $children,
+    ]);
+}
+
+
+    /**
+     * DELETE /api/devices/{deviceUid}/assembly/{childUid}
+     * Unlinks the child from the parent device.
+     */
+    public function detach(Request $req, string $deviceUid, string $childUid)
+    {
+        $tenantId = $this->tenantId($req);
+        if ($tenantId <= 0) return response()->json(['message' => 'Tenant not resolved'], 400);
+
+        $c = $this->sharedConn();
+
+        if (!Schema::connection($c)->hasTable('devices_s') ||
+            !Schema::connection($c)->hasTable('device_assembly_links_s')) {
+            return response()->json(['message' => 'Device tables not present'], 500);
+        }
+
+        $parentId = DB::connection($c)->table('devices_s')
+            ->where('tenant_id', $tenantId)
+            ->where('device_uid', $deviceUid)
+            ->value('id');
+
+        $childId = DB::connection($c)->table('devices_s')
+            ->where('tenant_id', $tenantId)
+            ->where('device_uid', $childUid)
+            ->value('id');
+
+        if (!$parentId || !$childId) {
+            return response()->json(['message' => 'Device not found'], 404);
+        }
+
+        $childCol = $this->detectChildDeviceCol($c);
+        $removed = DB::connection($c)->table('device_assembly_links_s')
+            ->where('tenant_id', $tenantId)
+            ->where('parent_device_id', $parentId)
+            ->where($childCol, $childId)
+            ->delete();
+
+        return response()->json(['removed' => (bool) $removed]);
     }
 }
