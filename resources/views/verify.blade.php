@@ -120,8 +120,14 @@
                 @foreach(request()->query() as $k => $v)
                     @if($k !== 'hc') <input type="hidden" name="{{ $k }}" value="{{ $v }}"> @endif
                 @endforeach
-                <input class="input mono" type="text" name="hc" value="{{ request('hc') }}"
-                       maxlength="20" placeholder="Enter micro code (12 char)">
+                {{-- <input class="input mono" type="text" name="hc" value="{{ request('hc') }}"
+                       maxlength="20" placeholder="Enter micro code (12 char)"> --}}
+                        <input class="input mono" type="text" name="hc" value="{{ request('hc') }}"
+        maxlength="12" pattern="[0-9A-Z]{12}"
+        placeholder="Enter micro code (12 char)">
+ <div class="small muted" style="margin-top:4px">
+   Tip: we treat I and L as 1, and O as 0.
+ </div>
                 <button class="btn" type="submit">Check</button>
             </form>
         @endif
