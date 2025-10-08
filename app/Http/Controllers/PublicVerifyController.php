@@ -3,8 +3,14 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
+// use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\{DB, Storage, Cache};
+
+
+use Illuminate\Support\Facades\Response;
+use Illuminate\Support\Str;
+
 
 class PublicVerifyController extends Controller
 {
@@ -452,4 +458,156 @@ class PublicVerifyController extends Controller
         // Keep as a passthrough or add default keys if you like.
         return $payload;
     }
+
+
+// public function qrPng(Request $req, string $token)
+// {
+//     $c = $this->sharedConn();
+//     $row = DB::connection($c)->table('qr_codes_s')
+//         ->select('tenant_id','token')->where('token',$token)->first();
+//     if (!$row) abort(404);
+
+//     // Size for previews/tiles (default 720 for print)
+//     $size = (int) $req->query('w', 720);
+//     $size = max(120, min($size, 1024)); // clamp
+
+//     $ch   = (string) $req->query('ch', '');
+//     $base = rtrim(config('app.url'), '/');
+//     $url  = $base.'/v/'.rawurlencode($token).($ch ? ('?ch='.rawurlencode($ch)) : '');
+
+//     // Disk cache key (per tenant, token, size, ch)
+//     $key  = "qr/{$row->tenant_id}/{$token}_{$size}_".($ch ?: '~').".png";
+//     if (\Storage::disk('local')->exists($key)) {
+//         $path = \Storage::disk('local')->path($key);
+//         return response()->file($path, [
+//             'Cache-Control' => 'public, max-age=31536000, immutable',
+//             'Content-Type'  => 'image/png',
+//         ]);
+//     }
+
+//     // Generate (Bacon) at 'size' and overlay watermark
+//     $png = \QrCode::format('png')->size($size)->margin(1)->errorCorrection('M')->generate($url);
+//     $img = \Intervention\Image\Facades\Image::make($png);
+
+//     // Lightweight watermark (same as before, but keep it cheap)
+//     $digest = hash_hmac('sha256', $token, $this->wmKeyForTenant($row->tenant_id), true);
+//     $w = $img->width(); $h = $img->height();
+//     for ($i=0; $i<12; $i++) { // 12 lines instead of 16
+//         $a  = ord($digest[$i]);
+//         $x0 = ($a * 37 + 13) % $w;  $y0 = ($a * 53 + 29) % $h;
+//         $x1 = ($x0 + 160 + ($a%60)) % $w; $y1 = ($y0 + 160 + (($a>>2)%60)) % $h;
+//         $color = $i % 2 ? 'rgba(255,0,130,0.06)' : 'rgba(0,90,255,0.06)';
+//         $img->line($x0,$y0,$x1,$y1,function($d) use($color){ $d->color($color); $d->width(2); });
+//     }
+
+//     // Store & return
+//     \Storage::disk('local')->put($key, (string)$img->encode('png', 9));
+//     return response((string)$img->encode('png', 9), 200, [
+//         'Content-Type'  => 'image/png',
+//         'Cache-Control' => 'public, max-age=31536000, immutable',
+//     ]);
+// }
+
+public function qrPng(Request $req, string $token)
+{
+    $c = $this->sharedConn();
+    $row = DB::connection($c)->table('qr_codes_s')
+        ->select('tenant_id','token')->where('token', $token)->first();
+    if (!$row) abort(404);
+
+    // 1) Size for preview/print
+    $size = (int) $req->query('w', 720);
+    $size = max(120, min($size, 1024)); // clamp
+
+    // 2) Build verify URL (preserve channel)
+    $base = rtrim(config('app.url'), '/');
+    $url  = $base.'/v/'.rawurlencode($token);
+    if ($ch = $req->query('ch')) $url .= '?ch='.rawurlencode($ch);
+
+    // 3) Disk cache path
+    $fname = sprintf('%s_%d_%s.png', $token, $size, $ch ?: '~');
+    $path  = "qr/{$row->tenant_id}/{$fname}";
+    $disk  = Storage::disk('public');  // run: php artisan storage:link
+
+    if ($disk->exists($path)) {
+        return response()->file($disk->path($path), [
+            'Cache-Control' => 'public, max-age=31536000, immutable',
+            'Content-Type'  => 'image/png',
+        ]);
+    }
+
+    // 4) Prevent thundering herd
+    $lock = Cache::lock("qr:gen:".$path, 30);
+    if ($lock->get()) {
+        try {
+            // Generate QR
+            $png = \QrCode::format('png')
+                ->size($size)->margin(1)->errorCorrection('M')->generate($url);
+            $img = \Intervention\Image\Facades\Image::make($png);
+
+            // Lightweight watermark (deterministic)
+            $digest = hash_hmac('sha256', $token, $this->wmKeyForTenant($row->tenant_id), true);
+            $w = $img->width(); $h = $img->height();
+            for ($i=0; $i<12; $i++) {
+                $a  = ord($digest[$i]);
+                $x0 = ($a * 37 + 13) % $w;  $y0 = ($a * 53 + 29) % $h;
+                $x1 = ($x0 + 160 + ($a%60)) % $w; $y1 = ($y0 + 160 + (($a>>2)%60)) % $h;
+                $color = $i % 2 ? 'rgba(255,0,130,0.06)' : 'rgba(0,90,255,0.06)';
+                $img->line($x0,$y0,$x1,$y1,function($d) use($color){ $d->color($color); $d->width(2); });
+            }
+
+            // Save compressed and return
+            $disk->put($path, (string)$img->encode('png', 8));
+
+        } finally {
+            optional($lock)->release();
+        }
+    } else {
+        // Another request is generating it — wait (max 10s) then fall through to file read
+        $lock->block(10);
+    }
+
+    if (!$disk->exists($path)) abort(503, 'QR generation busy, try again'); // rare
+    return response()->file($disk->path($path), [
+        'Cache-Control' => 'public, max-age=31536000, immutable',
+        'Content-Type'  => 'image/png',
+    ]);
+}
+
+
+public function microPng(\Illuminate\Http\Request $req, string $token) {
+    $c = $this->sharedConn();
+    $row = DB::connection($c)->table('qr_codes_s')
+        ->select('tenant_id','token','human_code','micro_chk')
+        ->where('token', $token)->first();
+    if (!$row) abort(404);
+
+    $hc = strtoupper($row->human_code ?? $this->deriveHumanFromMicro($row->micro_chk));
+    if ($hc === '' || strlen($hc) !== 12) abort(404);
+
+    $png = \SimpleSoftwareIO\QrCode\Facades\QrCode::format('png')
+        ->size(200)->margin(1)->errorCorrection('H')->generate($hc);
+
+    return Response::make($png, 200, [
+        'Content-Type'  => 'image/png',
+        'Cache-Control' => 'public, max-age=31536000, immutable',
+    ]);
+}
+
+// Helpers
+protected function wmKeyForTenant(int $tenantId): string {
+    // per-tenant secret K2 (watermark). Replace with your KMS fetch.
+    return config('app.wm_k2_fallback', 'DEMO-K2') . '::' . $tenantId;
+}
+protected function deriveHumanFromMicro($microChkBin): string {
+    if (!$microChkBin) return '';
+    $first8 = substr($microChkBin, 0, 8);
+    return $this->base32Crockford($first8, 12);
+}
+protected function base32Crockford(string $bytes, int $len=12): string {
+    $alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    $bits=''; for ($i=0;$i<strlen($bytes);$i++) $bits.=str_pad(decbin(ord($bytes[$i])),8,'0',STR_PAD_LEFT);
+    $out=''; for ($i=0;$i+5<=strlen($bits) && strlen($out)<$len; $i+=5) $out.=$alphabet[bindec(substr($bits,$i,5))];
+    return strtoupper($out);
+}
 }
