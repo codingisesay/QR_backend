@@ -460,53 +460,7 @@ class PublicVerifyController extends Controller
     }
 
 
-// public function qrPng(Request $req, string $token)
-// {
-//     $c = $this->sharedConn();
-//     $row = DB::connection($c)->table('qr_codes_s')
-//         ->select('tenant_id','token')->where('token',$token)->first();
-//     if (!$row) abort(404);
 
-//     // Size for previews/tiles (default 720 for print)
-//     $size = (int) $req->query('w', 720);
-//     $size = max(120, min($size, 1024)); // clamp
-
-//     $ch   = (string) $req->query('ch', '');
-//     $base = rtrim(config('app.url'), '/');
-//     $url  = $base.'/v/'.rawurlencode($token).($ch ? ('?ch='.rawurlencode($ch)) : '');
-
-//     // Disk cache key (per tenant, token, size, ch)
-//     $key  = "qr/{$row->tenant_id}/{$token}_{$size}_".($ch ?: '~').".png";
-//     if (\Storage::disk('local')->exists($key)) {
-//         $path = \Storage::disk('local')->path($key);
-//         return response()->file($path, [
-//             'Cache-Control' => 'public, max-age=31536000, immutable',
-//             'Content-Type'  => 'image/png',
-//         ]);
-//     }
-
-//     // Generate (Bacon) at 'size' and overlay watermark
-//     $png = \QrCode::format('png')->size($size)->margin(1)->errorCorrection('M')->generate($url);
-//     $img = \Intervention\Image\Facades\Image::make($png);
-
-//     // Lightweight watermark (same as before, but keep it cheap)
-//     $digest = hash_hmac('sha256', $token, $this->wmKeyForTenant($row->tenant_id), true);
-//     $w = $img->width(); $h = $img->height();
-//     for ($i=0; $i<12; $i++) { // 12 lines instead of 16
-//         $a  = ord($digest[$i]);
-//         $x0 = ($a * 37 + 13) % $w;  $y0 = ($a * 53 + 29) % $h;
-//         $x1 = ($x0 + 160 + ($a%60)) % $w; $y1 = ($y0 + 160 + (($a>>2)%60)) % $h;
-//         $color = $i % 2 ? 'rgba(255,0,130,0.06)' : 'rgba(0,90,255,0.06)';
-//         $img->line($x0,$y0,$x1,$y1,function($d) use($color){ $d->color($color); $d->width(2); });
-//     }
-
-//     // Store & return
-//     \Storage::disk('local')->put($key, (string)$img->encode('png', 9));
-//     return response((string)$img->encode('png', 9), 200, [
-//         'Content-Type'  => 'image/png',
-//         'Cache-Control' => 'public, max-age=31536000, immutable',
-//     ]);
-// }
 
 public function qrPng(Request $req, string $token)
 {
