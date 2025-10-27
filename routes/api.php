@@ -20,6 +20,8 @@ use App\Http\Controllers\QrController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceAssemblyController;
 use App\Http\Controllers\CompositeQrController;
+use App\Http\Controllers\PrivateStatusController;
+
 
 
 
@@ -53,6 +55,14 @@ Route::prefix('auth')->group(function () {
 
    
 });
+
+Route::middleware(['auth:sanctum','ability:ops-write,private-write'])
+  ->prefix('private')
+  ->group(function () {
+    Route::post('/status/bulk/preview', [PrivateStatusController::class,'preview']);
+    Route::post('/status/bulk/commit',  [PrivateStatusController::class,'commit']);
+    Route::get ('/status/jobs/{id}',    [PrivateStatusController::class,'jobStatus']);
+  });
     
 // ---------------- Token-only (no tenant) ----------------
 Route::middleware('auth:sanctum')->group(function () {
@@ -64,6 +74,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/plans', [PlanController::class, 'index']);
     Route::get('/auth/me', [AuthController::class, 'me']);
+
+      Route::post('/nfc/keys', [\App\Http\Controllers\NfcController::class,'storeKey']);
+  Route::post('/nfc/provision/bulk', [\App\Http\Controllers\NfcController::class,'provisionBulk']);
+  Route::post('/puf/provision/bulk', [\App\Http\Controllers\PufController::class,'provisionBulk']);
+
 });
 
 
@@ -164,6 +179,16 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Batches & runs
     Route::get('/products/{idOrSku}/batches', [QrController::class, 'batchesForProduct']);
     Route::get('/batches/{batchId}/runs',     [QrController::class, 'runsForBatch']);
+
+      Route::get('/tenant/settings', [QrController::class, 'tenantSettings']);
+
+      // NEW: download a bind template CSV for a product + batch
+Route::get('products/{idOrSku}/batches/{batchCode}/bind-template', [\App\Http\Controllers\QrController::class, 'bindTemplateForBatch']);
+
+// (Optional) generic template (used elsewhere if needed)
+Route::get('templates/bind-csv', [\App\Http\Controllers\QrController::class, 'bindTemplateGeneric']);
+Route::get('products/{idOrSku}/availability', [QrController::class, 'availabilityForProductBatch']);
+
 });
 
 
