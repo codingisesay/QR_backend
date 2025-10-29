@@ -7,6 +7,17 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Facades\Log;
+
+use Barryvdh\DomPDF\Facade\Pdf;
+
+use BaconQrCode\Renderer\ImageRenderer;
+use BaconQrCode\Renderer\RendererStyle\RendererStyle;
+use BaconQrCode\Writer;
+
+// Try both possible GD backend namespaces (new/old)
+use BaconQrCode\Renderer\Image\GdImageBackEnd as NewGdBackEnd;
+use BaconQrCode\Renderer\Image\ImageBackEnd\GdImageBackEnd as OldGdBackEnd;
 
 
 class QrController extends Controller
@@ -867,57 +878,255 @@ public function tenantSettings(\Illuminate\Http\Request $req)
 
     /* ---------- export zip ---------- */
 
-    public function exportZip(Request $req, int $printRunId)
-    {
-        $tenant = $this->tenant($req);
-        if (!$tenant?->id) return response()->json(['message'=>'Tenant not resolved'], 400);
 
-        $c = $this->sharedConn();
 
-        // Resolve the root product for this run (the product you minted on)
-
-        if (!Schema::connection($c)->hasTable('qr_codes_s')) return response()->json(['message'=>'QR table not present'], 500);
-
-        $codes = DB::connection($c)->table('qr_codes_s')
-            ->where('tenant_id',$tenant->id)->where('print_run_id',$printRunId)
-            ->orderBy('id')->get(['token','channel_id']);
-        if ($codes->isEmpty()) return response()->json(['message'=>'No codes found for this print run'], 404);
-
-        $channelCode = 'WEB';
-        if (Schema::connection($c)->hasTable('qr_channels_s')) {
-            $chId = (int)$codes->first()->channel_id;
-            $channelCode = DB::connection($c)->table('qr_channels_s')
-                ->where('tenant_id',$tenant->id)->where('id',$chId)->value('code') ?? 'WEB';
-        }
-
-        if (!class_exists(\SimpleSoftwareIO\QrCode\Facades\QrCode::class)) {
-            return response()->json(['message'=>'Install: composer require simplesoftwareio/simple-qrcode:^4.2'], 500);
-        }
-
-        $base = $this->verifyBase();
-
-        $response = new StreamedResponse(function () use ($codes, $base, $channelCode) {
-            $zip = new \ZipArchive();
-            $tmp = tempnam(sys_get_temp_dir(), 'qrzip');
-            $zip->open($tmp, \ZipArchive::OVERWRITE);
-
-            foreach ($codes as $i => $row) {
-                $url = $base.'/v/'.$row->token.'?ch='.rawurlencode($channelCode).'&v=1';
-                $png = \SimpleSoftwareIO\QrCode\Facades\QrCode::format('png')->size(600)->margin(1)->generate($url);
-                $zip->addFromString(($i+1).'_'.$row->token.'.png', $png);
-            }
-
-            $zip->close();
-            readfile($tmp);
-            @unlink($tmp);
-        });
-
-        $response->headers->set('Content-Type', 'application/zip');
-        $response->headers->set('Content-Disposition', 'attachment; filename="qr-print-run-'.$printRunId.'.zip"');
-        return $response;
+public function exportZip(Request $req, int $printRunId)
+{
+    $tenant = $this->tenant($req);
+    if (!$tenant?->id) {
+        return response()->json(['message' => 'Tenant not resolved'], 400);
     }
 
-    
+    $c = $this->sharedConn();
+
+    if (!Schema::connection($c)->hasTable('qr_codes_s')) {
+        return response()->json(['message' => 'QR table not present'], 500);
+    }
+
+    $codes = DB::connection($c)->table('qr_codes_s')
+        ->where('tenant_id', $tenant->id)
+        ->where('print_run_id', $printRunId)
+        ->orderBy('id')
+        ->get(['token','channel_id']);
+
+    if ($codes->isEmpty()) {
+        return response()->json(['message' => 'No codes found for this print run'], 404);
+    }
+
+    // Resolve channel code
+    $channelCode = 'WEB';
+    if (Schema::connection($c)->hasTable('qr_channels_s')) {
+        $chId = (int)($codes->first()->channel_id ?? 0);
+        $channelCode = DB::connection($c)->table('qr_channels_s')
+            ->where('tenant_id',$tenant->id)->where('id',$chId)->value('code') ?? 'WEB';
+    }
+
+    if (!class_exists(\ZipArchive::class)) {
+        return response()->json(['message' => 'PHP Zip extension missing (enable extension=zip)'], 500);
+    }
+
+    $base = $this->verifyBase(); // must return a valid http(s) URL
+
+    // Prefer PNG via GD backend (no Imagick), else fallback to SVG
+    $gdBackendClass =
+        class_exists(\BaconQrCode\Renderer\Image\GdImageBackEnd::class) ? \BaconQrCode\Renderer\Image\GdImageBackEnd::class :
+        (class_exists(\BaconQrCode\Renderer\Image\ImageBackEnd\GdImageBackEnd::class) ? \BaconQrCode\Renderer\Image\ImageBackEnd\GdImageBackEnd::class : null);
+
+    $usePngViaGd = ($gdBackendClass !== null) && extension_loaded('gd');
+
+    $tmpZip = tempnam(sys_get_temp_dir(), 'qrzip_');
+    $zip = new \ZipArchive();
+
+    try {
+        if ($zip->open($tmpZip, \ZipArchive::OVERWRITE) !== true) {
+            throw new \RuntimeException('Unable to open ZipArchive for writing');
+        }
+
+        // Put everything under a folder in the ZIP to avoid collisions
+        $zip->addEmptyDir('qr');
+
+        // Prepare renderer if doing PNG
+        $writer = null;
+        if ($usePngViaGd) {
+            $renderer = new ImageRenderer(
+                new RendererStyle(600, 1), // size=600, margin=1
+                new $gdBackendClass()
+            );
+            $writer = new Writer($renderer);
+        } else {
+            if (!class_exists(\SimpleSoftwareIO\QrCode\Facades\QrCode::class)) {
+                throw new \RuntimeException('Install: composer require simplesoftwareio/simple-qrcode:^4.2');
+            }
+        }
+
+        $idx = 0;
+        foreach ($codes as $row) {
+            $idx++;
+            $url = $base.'/v/'.$row->token.'?ch='.rawurlencode($channelCode).'&v=1';
+
+            // 5-digit zero-padded index to ensure unique & sorted names
+            $iPad = str_pad((string)$idx, 5, '0', STR_PAD_LEFT);
+
+            if ($usePngViaGd) {
+                $bytes = $writer->writeString($url);
+                $filename = "qr/{$iPad}_{$row->token}.png";
+            } else {
+                $bytes = \SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')->size(600)->margin(1)->generate($url);
+                $filename = "qr/{$iPad}_{$row->token}.svg";
+            }
+
+            // Extra safety: ensure each add uses a unique filename
+            $ok = $zip->addFromString($filename, $bytes);
+            if (!$ok) {
+                throw new \RuntimeException("Failed adding {$filename} to ZIP");
+            }
+        }
+
+        // Optional: sanity log
+        Log::info('QR ZIP export', [
+            'printRunId' => $printRunId,
+            'tenant_id'  => $tenant->id,
+            'files'      => $zip->numFiles,
+            'png'        => $usePngViaGd,
+        ]);
+
+        $zip->close();
+
+        $fname = "qr-print-run-{$printRunId}.zip";
+        return response()->download($tmpZip, $fname, [
+            'Content-Type' => 'application/zip',
+        ])->deleteFileAfterSend(true);
+
+    } catch (\Throwable $e) {
+        @is_file($tmpZip) && @unlink($tmpZip);
+        Log::error('QR ZIP export failed', [
+            'printRunId' => $printRunId,
+            'tenant_id'  => $tenant->id ?? null,
+            'error'      => $e->getMessage(),
+        ]);
+
+        return response()->json([
+            'message' => 'Failed to generate QR ZIP',
+            'error'   => app()->hasDebugModeEnabled() ? $e->getMessage() : 'Internal error',
+        ], 500);
+    }
+}
+
+
+
+    public function exportPdf(Request $req, int $printRunId)
+{
+    $tenant = $this->tenant($req);
+    if (!$tenant?->id) {
+        return response()->json(['message' => 'Tenant not resolved'], 400);
+    }
+
+    $c = $this->sharedConn();
+    if (!Schema::connection($c)->hasTable('qr_codes_s')) {
+        return response()->json(['message' => 'QR table not present'], 500);
+    }
+
+    // --- dynamic columns (avoid 42S22) ---
+    $cols = ['token', 'channel_id'];
+    foreach (['human_code','micro_code','qr_human_code','qr_micro_code','micro_hex'] as $maybe) {
+        if (Schema::connection($c)->hasColumn('qr_codes_s', $maybe)) $cols[] = $maybe;
+    }
+
+    $codes = DB::connection($c)->table('qr_codes_s')
+        ->where('tenant_id', $tenant->id)
+        ->where('print_run_id', $printRunId)
+        ->orderBy('id')
+        ->get($cols);
+
+    if ($codes->isEmpty()) {
+        return response()->json(['message' => 'No codes found for this print run'], 404);
+    }
+
+    // Channel
+    $channelCode = 'WEB';
+    if (Schema::connection($c)->hasTable('qr_channels_s')) {
+        $chId = (int)($codes->first()->channel_id ?? 0);
+        $channelCode = DB::connection($c)->table('qr_channels_s')
+            ->where('tenant_id', $tenant->id)->where('id', $chId)->value('code') ?? 'WEB';
+    }
+
+    $base = $this->verifyBase(); // your public base URL (used only for verify_url text)
+
+    // --- layout params from query ---
+    $paper       = strtolower($req->query('paper', 'a4'));  // a4|letter|legal|custom
+    $orientation = strtolower($req->query('orientation', 'portrait')) === 'landscape' ? 'landscape' : 'portrait';
+    $widthMm     = (float)$req->query('width_mm', 210);
+    $heightMm    = (float)$req->query('height_mm', 297);
+    $marginMm    = max(0, (float)$req->query('margin_mm', 10));
+    $colsN       = max(1, (int)$req->query('cols', 4));
+    $rowsN       = max(1, (int)$req->query('rows', 7));
+    $gapMm       = max(0, (float)$req->query('gap_mm', 2));
+    $qrMm        = max(4, (float)$req->query('qr_mm', 32));
+    $showText    = (int)$req->query('show_text', 1) === 1;
+    $fontPt      = max(6, (int)$req->query('font_pt', 9));
+
+    // Paper spec for Dompdf (points)
+    $mm2pt = 72 / 25.4; // 2.8346457
+    $paperSpec = 'a4';
+    if ($paper === 'letter')       $paperSpec = 'letter';
+    elseif ($paper === 'legal')    $paperSpec = 'legal';
+    elseif ($paper === 'custom')   $paperSpec = [0, 0, $widthMm * $mm2pt, $heightMm * $mm2pt];
+
+    // --- paginate into grid pages ---
+    $perPage = $colsN * $rowsN;
+    $pages = [];
+    $all = $codes->values();
+    for ($i = 0; $i < $all->count(); $i += $perPage) {
+        $pages[] = $all->slice($i, $perPage)->values();
+    }
+
+    // --- build items for blade; inline SVGs (base64) so Dompdf never leaves the HTML ---
+    if (!class_exists(\SimpleSoftwareIO\QrCode\Facades\QrCode::class)) {
+        return response()->json(['message' => 'Install: composer require simplesoftwareio/simple-qrcode:^4.2'], 500);
+    }
+
+    $itemsPerPage = [];
+    foreach ($pages as $slice) {
+        $arr = [];
+        foreach ($slice as $row) {
+            $verifyUrl = $base . '/v/' . $row->token . '?ch=' . rawurlencode($channelCode) . '&v=1';
+
+            // text line preference: human_code -> qr_human_code -> micro_code -> token
+            $txt = $row->human_code
+                ?? $row->qr_human_code
+                ?? $row->micro_code
+                ?? $row->token;
+
+            // Create SVG sized near qrMm (Dompdf renders vector perfectly)
+            // Note: size() is pixels; for a vector svg it's OK—we rely on CSS width in mm in the blade
+            $rawSvg = \SimpleSoftwareIO\QrCode\Facades\QrCode::format('svg')
+                        ->size((int)round($qrMm * 4)) // generous internal px; actual display via CSS
+                        ->margin(0)
+                        ->generate($verifyUrl);
+
+            $svgBase64 = 'data:image/svg+xml;base64,' . base64_encode($rawSvg);
+
+            $arr[] = [
+                'verify_url' => $verifyUrl,
+                'svg_data'   => $svgBase64,
+                'label'      => $txt,
+                'token'      => $row->token,
+            ];
+        }
+        $itemsPerPage[] = $arr;
+    }
+
+    // --- render blade ---
+    $html = view('qr.pdf-grid', [
+        'pages'     => $itemsPerPage,
+        'cols'      => $colsN,
+        'rows'      => $rowsN,
+        'gapMm'     => $gapMm,
+        'qrMm'      => $qrMm,
+        'marginMm'  => $marginMm,
+        'showText'  => $showText,
+        'fontPt'    => $fontPt,
+    ])->render();
+
+    // --- dompdf ---
+    $pdf = Pdf::loadHTML($html)
+        ->setPaper($paperSpec, $orientation)
+        ->setOption('isRemoteEnabled', true) // safe; we’re using data: URLs
+        ->setOption('dpi', 300);
+
+    $fname = "qr-print-run-{$printRunId}.pdf";
+    return $pdf->download($fname);
+}
     /**
      * Return immediate BOM children for a product with their quantity.
      * Supports flexible column names on product_components_s.

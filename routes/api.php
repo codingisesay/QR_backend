@@ -172,6 +172,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/qr/plan-stats', [QrController::class, 'planStats']);
     Route::get('/print-runs/{printRunId}/qr.zip', [QrController::class, 'exportZip']);
 
+    Route::get('/print-runs/{printRunId}/qr.pdf', [QrController::class, 'exportPdf']);
+
     // Lists for UI
     Route::get('/print-runs/{printRunId}/codes', [QrController::class, 'listForPrintRun']);
     Route::get('/products/{idOrSku}/codes',     [QrController::class, 'listForProduct']);
