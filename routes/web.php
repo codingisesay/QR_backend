@@ -10,3 +10,11 @@ Route::get('/qr/{token}/micro.png', [PublicVerifyController::class, 'microPng'])
 
 Route::get('/v/{token}', [PublicVerifyController::class, 'verify'])->name('qr.verify');
 Route::get('/t/{tenant}/v/{token}', [PublicVerifyController::class, 'verifyWithTenant'])->name('qr.verify.tenant');
+
+// routes/web.php (temporary)
+Route::get('/whoami', function () {
+    return response()->json([
+        'php_sapi' => PHP_SAPI,
+        'loaded_ini' => php_ini_loaded_file(),
+    ]);
+});
