@@ -57,7 +57,7 @@ protected static function base32Crockford(string $bin, int $len = 13): string {
 }
 
     protected function verifyBase(): string {
-        return config('app.verify_base', 'https://verify.your-domain.com');
+        return config('app.verify_base', 'http://172.16.1.223:8105');
     }
 
     /** Resolve tenant safely: container → X-Tenant header (slug/id) → user->tenant_id. */
