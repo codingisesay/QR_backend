@@ -28,6 +28,8 @@ return [
 
     'env' => env('APP_ENV', 'production'),
 
+    'verify_base' => env('VERIFY_BASE', null),
+
     /*
     |--------------------------------------------------------------------------
     | Application Debug Mode

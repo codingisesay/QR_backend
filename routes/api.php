@@ -21,7 +21,8 @@ use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceAssemblyController;
 use App\Http\Controllers\CompositeQrController;
 use App\Http\Controllers\PrivateStatusController;
-
+use App\Http\Controllers\NfcController;
+use App\Http\Controllers\PufController;
 
 
 
@@ -75,9 +76,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/plans', [PlanController::class, 'index']);
     Route::get('/auth/me', [AuthController::class, 'me']);
 
-      Route::post('/nfc/keys', [\App\Http\Controllers\NfcController::class,'storeKey']);
-  Route::post('/nfc/provision/bulk', [\App\Http\Controllers\NfcController::class,'provisionBulk']);
-  Route::post('/puf/provision/bulk', [\App\Http\Controllers\PufController::class,'provisionBulk']);
+  //     Route::post('/nfc/keys', [\App\Http\Controllers\NfcController::class,'storeKey']);
+  // Route::post('/nfc/provision/bulk', [\App\Http\Controllers\NfcController::class,'provisionBulk']);
+  // Route::post('/puf/provision/bulk', [\App\Http\Controllers\PufController::class,'provisionBulk']);
 
 });
 
@@ -190,6 +191,14 @@ Route::get('products/{idOrSku}/batches/{batchCode}/bind-template', [\App\Http\Co
 // (Optional) generic template (used elsewhere if needed)
 Route::get('templates/bind-csv', [\App\Http\Controllers\QrController::class, 'bindTemplateGeneric']);
 Route::get('products/{idOrSku}/availability', [QrController::class, 'availabilityForProductBatch']);
+
+// NFC
+Route::post('/nfc/keys', [NfcController::class, 'storeKey']);
+Route::post('/nfc/provision/bulk', [NfcController::class, 'provisionBulk']);
+
+// PUF device workflow
+Route::post('/puf/jobs/poll', [PufController::class, 'pollJob']);
+Route::post('/puf/jobs/{jobId}/submit', [PufController::class, 'submitCapture']);
 
 });
 

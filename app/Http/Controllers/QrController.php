@@ -138,90 +138,1333 @@ protected static function base32Crockford(string $bin, int $len = 13): string {
     /* ---------- mint ---------- */
 
 
+// public function mintForProduct(Request $req, $idOrSku)
+// {
+//     $tenant = $this->tenant($req);
+//     if (!$tenant?->id) {
+//         return response()->json(['message'=>'Tenant not resolved (missing X-Tenant header or binding)'], 400);
+//     }
+
+//     $data = $req->validate([
+//         'qty'              => ['required','integer','min:1','max:200000'],
+//         'channel_code'     => ['required','string','max:40'],
+//         'batch_code'       => ['nullable','string','max:64'],
+//         'micro_mode'       => ['nullable','in:hmac16,none'],
+//         'create_print_run' => ['sometimes','boolean'],
+//         'print_vendor'     => ['nullable','string','max:120'],
+//         'reel_start'       => ['nullable','string','max:40'],
+//         'reel_end'         => ['nullable','string','max:40'],
+//         'cascade'          => ['sometimes','boolean'], // default true for composite
+
+//         'batch_mfg_date'     => ['nullable','date'],
+//         'batch_exp_date'     => ['nullable','date','after_or_equal:batch_mfg_date'],
+//         'batch_qty_planned'  => ['nullable','integer','min:1'], // optional; default = root qty
+
+
+//         // NEW (required by your UI mint dialog)
+//         'verification_mode' => 'required|in:qr,qr_nfc,qr_puf,qr_puf_nfc,puf_nfc',
+
+//         // Optional (if you want to allow overrides at mint-time)
+//         'expires_at'         => 'nullable|date',
+//         'nfc_key_ref'        => 'nullable|string|max:64',
+//         'puf_alg'            => 'nullable|string|max:40',
+//         'puf_score_threshold'=> 'nullable|numeric|min:0|max:100',
+//     ]);
+
+//     $c  = $this->sharedConn();
+//     $tp = \Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
+
+//     // Resolve product
+//     $q = \DB::connection($c)->table($tp)->where('tenant_id',$tenant->id);
+//     $product = is_numeric($idOrSku)
+//         ? $q->where('id',(int)$idOrSku)->first(['id','sku','type'])
+//         : $q->where('sku',$idOrSku)->first(['id','sku','type']);
+//     if (!$product) return response()->json(['message'=>'Unknown product'], 422);
+
+//     $type        = strtolower($product->type ?? 'standard');
+//     $isComposite = $type === 'composite';
+//     $doCascade   = $req->has('cascade') ? $req->boolean('cascade') : $isComposite;
+
+//     // Required tables
+//     foreach (['qr_codes_s','qr_channels_s'] as $t) {
+//         if (!\Schema::connection($c)->hasTable($t)) {
+//             return response()->json(['message'=>"Required table '$t' not present"], 500);
+//         }
+//     }
+
+//     // Per-root qty map; include root
+//     $qtyPerRoot = [ (int)$product->id => 1 ];
+
+//     if ($doCascade) {
+//         if (!\Schema::connection($c)->hasTable('product_components_s')) {
+//             return response()->json(['message'=>'Composite product has no components table'], 500);
+//         }
+//         $hasBom = \DB::connection($c)->table('product_components_s')
+//             ->where('tenant_id',$tenant->id)->where('parent_product_id',$product->id)->exists();
+//         if (!$hasBom) {
+//             return response()->json(['message'=>'Composite product has no components (BOM empty)'], 422);
+//         }
+
+//         // Traverse BOM multi-level; accumulate per-root quantities
+//         $visitedEdge = [];
+//         $stack = [ (int)$product->id ];
+//         while ($stack) {
+//             $parentId = array_pop($stack);
+//             $parentFactor = max(1, (int)ceil($qtyPerRoot[$parentId] ?? 0));
+
+//             $rows = \DB::connection($c)->table('product_components_s')
+//                 ->where('tenant_id',$tenant->id)->where('parent_product_id',$parentId)
+//                 ->get(['child_product_id','quantity']);
+
+//             foreach ($rows as $r) {
+//                 $childId = (int)$r->child_product_id;
+//                 $edgeKey = $parentId.':'.$childId;
+//                 if (isset($visitedEdge[$edgeKey])) continue;
+//                 $visitedEdge[$edgeKey] = true;
+
+//                 $qNeeded = max(1, (int)ceil((float)($r->quantity ?? 0)));
+//                 $qtyPerRoot[$childId] = ($qtyPerRoot[$childId] ?? 0) + ($parentFactor * $qNeeded);
+//                 $stack[] = $childId;
+//             }
+//         }
+//     }
+
+//     // Scale by requested root qty
+//     $rootQty = (int)$data['qty'];
+//     $qtyByProductId = [];
+//     foreach ($qtyPerRoot as $pid => $perRoot) $qtyByProductId[$pid] = (int)$perRoot * $rootQty;
+
+//     // SKUs for affected products
+//     $allIds = array_keys($qtyByProductId);
+//     $meta = \DB::connection($c)->table($tp)
+//         ->where('tenant_id',$tenant->id)->whereIn('id',$allIds)
+//         ->get(['id','sku','type'])->keyBy('id');
+
+//     // Plan/limits
+//     $limits = $this->planQrLimits($tenant);
+//     $totalToMint = array_sum($qtyByProductId);
+
+//     if (!empty($limits['qr_max_batch'])) {
+//         $maxBatch = (int)$limits['qr_max_batch'];
+//         foreach ($qtyByProductId as $pid => $qPlan) {
+//             if ((int)$qPlan > $maxBatch) {
+//                 return response()->json([
+//                     'message'=>'Batch size exceeds plan limit for at least one SKU.',
+//                     'limit'=>$maxBatch,'sku'=>(string)($meta[$pid]->sku ?? $pid),
+//                     'requested_for_sku'=>(int)$qPlan,
+//                 ], 422);
+//             }
+//         }
+//     }
+//     if (!empty($limits['qr_month'])) {
+//         $used = $this->issuedThisMonth($tenant->id, $c);
+//         $remaining = max(0, (int)$limits['qr_month'] - (int)$used);
+//         if ($totalToMint > $remaining) {
+//             return response()->json([
+//                 'message'=>'Monthly QR limit exceeded.',
+//                 'limit'=>(int)$limits['qr_month'],'used_this_month'=>(int)$used,
+//                 'remaining'=>(int)$remaining,'requested_total'=>(int)$totalToMint,
+//             ], 422);
+//         }
+//     }
+
+//     // Ensure channel
+//     \DB::connection($c)->table('qr_channels_s')->updateOrInsert(
+//         ['tenant_id'=>$tenant->id,'code'=>$data['channel_code']],
+//         ['name'=>$data['channel_code']]
+//     );
+//     $channelId = \DB::connection($c)->table('qr_channels_s')
+//         ->where('tenant_id',$tenant->id)->where('code',$data['channel_code'])->value('id');
+
+//     // ONE shared batch row per (tenant,batch_code) with product_id = root
+//     // $sharedBatchId = null;
+//     // if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
+//     //     $existing = \DB::connection($c)->table('product_batches_s')
+//     //         ->where('tenant_id',$tenant->id)->where('batch_code',$data['batch_code'])
+//     //         ->first(['id']);
+//     //     if ($existing) {
+//     //         $sharedBatchId = $existing->id;
+//     //     } else {
+//     //         $ins = ['tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_code'=>$data['batch_code']];
+//     //         if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
+//     //         if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
+//     //         $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
+//     //     }
+//     // }
+
+//     // ONE shared batch row per (tenant,batch_code) with product_id = root
+// $sharedBatchId = null;
+// if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
+//     $existing = \DB::connection($c)->table('product_batches_s')
+//         ->where('tenant_id',$tenant->id)
+//         ->where('batch_code',$data['batch_code'])
+//         ->first(['id','product_id','mfg_date','exp_date','quantity_planned']);
+
+//     $qtyPlanned = $data['batch_qty_planned'] ?? $rootQty; // default to root qty
+//     $ins = [
+//         'tenant_id'  => $tenant->id,
+//         'product_id' => $product->id,
+//         'batch_code' => $data['batch_code'],
+//         'mfg_date'   => $data['batch_mfg_date'] ?? null,
+//         'exp_date'   => $data['batch_exp_date'] ?? null,
+//         'quantity_planned' => $qtyPlanned,
+//     ];
+
+//     if ($existing) {
+//         if ((int)$existing->product_id !== (int)$product->id) {
+//             return response()->json([
+//                 'message' => 'Batch code already used for a different product in this tenant.',
+//                 'batch_code' => $data['batch_code'],
+//             ], 422);
+//         }
+
+//         // Only update the fields you provided (so you can leave older batches untouched)
+//         $upd = [];
+//         if (array_key_exists('batch_mfg_date', $data)) $upd['mfg_date'] = $data['batch_mfg_date'];
+//         if (array_key_exists('batch_exp_date', $data)) $upd['exp_date'] = $data['batch_exp_date'];
+//         if (array_key_exists('batch_qty_planned', $data)) $upd['quantity_planned'] = $qtyPlanned;
+//         if ($upd) {
+//             if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $upd['updated_at']=now();
+//             \DB::connection($c)->table('product_batches_s')
+//               ->where('id', $existing->id)
+//               ->update($upd);
+//         }
+
+//         $sharedBatchId = $existing->id;
+//     } else {
+//         if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
+//         if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
+//         $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
+//     }
+// }
+
+
+//     // Create ONE print run anchored to the root
+//     $createRun = $req->boolean('create_print_run', true) && \Schema::connection($c)->hasTable('print_runs_s');
+//     $rootRunId = null;
+//     if ($createRun) {
+//         $rootRunId = \DB::connection($c)->table('print_runs_s')->insertGetId([
+//             'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_id'=>$sharedBatchId,
+//             'channel_id'=>$channelId,'vendor_name'=>$data['print_vendor'] ?? null,
+//             'reel_start'=>$data['reel_start'] ?? null,'reel_end'=>$data['reel_end'] ?? null,
+//             'qty_planned'=>$rootQty,'created_at'=>now(),
+//         ]);
+//     }
+
+//     // Mint ALL codes (for ALL SKUs) with print_run_id = root run
+//     $k2        = $this->k2ForTenant($tenant->id);
+//     $k3        = $this->k3ForTenant($tenant->id);    // micro key
+//     $baseUrl   = $this->verifyBase();
+//     $microMode = $data['micro_mode'] ?? 'hmac16';
+//     $qrExpiryDefault = $data['expires_at'] ?? ($data['batch_exp_date'] ?? null);
+
+//     // ---------- TENANT DEFAULTS for NFC/PUF: from saas_core (mysql) ----------
+//     $coreConn = 'mysql';
+//     $settingsMap = [];
+//     if (\Schema::connection($coreConn)->hasTable('tenant_settings')) {
+//         $settingsMap = \DB::connection($coreConn)->table('tenant_settings')
+//             ->where('tenant_id', $tenant->id)
+//             ->whereIn('key', ['nfc','puf'])
+//             ->pluck('value_json', 'key')
+//             ->all();
+//     }
+//     $settings = ['nfc' => $settingsMap['nfc'] ?? null, 'puf' => $settingsMap['puf'] ?? null];
+//     try { if (is_string($settings['nfc'])) $settings['nfc'] = json_decode($settings['nfc'], true); } catch (\Throwable $e) {}
+//     try { if (is_string($settings['puf'])) $settings['puf'] = json_decode($settings['puf'], true); } catch (\Throwable $e) {}
+
+//     $vmode  = $data['verification_mode'];                   // 'qr' | 'qr_nfc' | 'qr_puf' | 'qr_puf_nfc' | 'puf_nfc'
+//     $hasNfc = str_contains($vmode, 'nfc');
+//     $hasPuf = str_contains($vmode, 'puf');
+
+//     $nfcDefaultKey   = $settings['nfc']['key']['current'] ?? null;
+//     $pufDefaultAlg   = $settings['puf']['alg']            ?? null;
+//     $pufDefaultThres = $settings['puf']['threshold']      ?? null;
+//     // ------------------------------------------------------------------------
+
+//     $issuedBySku = [];
+//     $labelsRoot  = [];
+//     $tokensByPid = []; // for code graph
+
+//     foreach ($qtyByProductId as $pid => $qtyPlan) {
+//         $qtyPlan = (int)$qtyPlan;
+//         $sku = (string)($meta[$pid]->sku ?? $pid);
+//         if ($qtyPlan < 1) { $issuedBySku[$sku] = 0; continue; }
+
+//         $rows = [];
+//         for ($i=0; $i<$qtyPlan; $i++) {
+//             // unique token
+//             do {
+//                 $token = $this->base64url(random_bytes(16));
+//                 $exists = \DB::connection($c)->table('qr_codes_s')
+//                     ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
+//             } while ($exists);
+
+//             // micro / watermark signals
+//             $microChk = null; $microCode = null; $wmHash = null;
+//             if ($microMode === 'hmac16') {
+//                 $microRaw  = hash_hmac('sha256', $token, $k3, true);          // K3
+//                 $microChk  = substr($microRaw, 0, 16);                         // VARBINARY(16)
+//                 $microCode = self::base32Crockford(substr($microRaw,0,8), 13); // 13-char human code
+
+//                 $wmRaw  = hash_hmac('sha256', $token, $k2, true);              // K2
+//                 $wmHash = substr($wmRaw, 0, 16);                                // VARBINARY(16)
+//             }
+
+//             // Build insert row (qr_codes_s)
+//             $rows[] = [
+//                 'tenant_id'       => $tenant->id,
+//                 'token'           => $token,
+//                 'token_ver'       => 1,
+//                 'token_hash'      => hash('sha256', $token),
+//                 'status'          => 'issued',
+//                 'verification_mode'=> $vmode,
+//                 'version'         => 1,
+//                 'product_id'      => (int)$pid,
+//                 'batch_id'        => $sharedBatchId,
+//                 'channel_id'      => $channelId,
+//                 'print_run_id'    => $rootRunId,
+
+//                 'micro_chk'       => $microChk,
+//                 'watermark_hash'  => $wmHash,
+//                 'human_code'      => $microCode,
+
+//                 'issued_at'       => now(),
+//                 'activated_at'    => null,
+//                 'voided_at'       => null,
+//                 // if you have a policy, replace null with policy/app override
+//                 'expires_at'      => $data['expires_at'] ?? null,
+
+//                 // ---------- NEW: NFC columns ----------
+//                 'nfc_key_ref'     => $hasNfc ? ($data['nfc_key_ref'] ?? $nfcDefaultKey) : null,
+//                 'nfc_uid'         => null,                    // set later at enroll
+//                 'nfc_ctr_last'    => $hasNfc ? 0 : 0,         // start at 0, verifier will advance
+
+//                 // ---------- NEW: PUF columns ----------
+//                 'puf_id'                 => null,             // set later at enroll
+//                 'puf_fingerprint_hash'   => null,             // set later (64-char hex)
+//                 'puf_alg'                => $hasPuf ? ($data['puf_alg'] ?? $pufDefaultAlg) : null,
+//                 'puf_score_threshold'    => $hasPuf ? ($data['puf_score_threshold'] ?? $pufDefaultThres) : null,
+//             ];
+
+//             // Label preview for ROOT only
+//             if ((int)$pid === (int)$product->id) {
+//                 $labelsRoot[] = [
+//                     'token'      => $token,
+//                     'url'        => $baseUrl.'/v/'.$token.'?ch='.rawurlencode($data['channel_code']).'&v=1',
+//                     'micro_code' => $microCode,
+//                     'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
+//                 ];
+//             }
+//         }
+
+//         \DB::connection($c)->table('qr_codes_s')->insert($rows);
+
+//         // Track for code graph
+//         $tokensByPid[$pid] = array_column($rows, 'token');
+//         $issuedBySku[$sku] = $qtyPlan;
+//     }
+
+//     // === CODE GRAPH ==================================================================================
+//     $havePC  = \Schema::connection($c)->hasTable('product_codes_s');
+//     $havePCE = \Schema::connection($c)->hasTable('product_code_edges_s');
+
+//     if ($havePC) {
+//         // Mirror tokens into product_codes_s (kind: primary for root, component otherwise)
+//         foreach ($tokensByPid as $pid => $tokens) {
+//             $kind = ((int)$pid === (int)$product->id) ? 'primary' : 'component';
+//             $pcRows = [];
+//             foreach ($tokens as $tok) {
+//                 $pcRows[] = [
+//                     'tenant_id'=>$tenant->id,
+//                     'product_id'=>(int)$pid,
+//                     'code'=>$tok,
+//                     'kind'=>$kind,
+//                     'parent_code_id'=>null,
+//                     'status'=>'active',
+//                     'created_at'=>now(),
+//                     'updated_at'=>now(),
+//                 ];
+//             }
+//             if ($pcRows) \DB::connection($c)->table('product_codes_s')->insert($pcRows);
+//         }
+
+//         if ($havePCE && \Schema::connection($c)->hasTable('product_components_s')) {
+//             // Fetch code ids
+//             $codeIdByToken = [];
+//             $flat = [];
+//             foreach ($tokensByPid as $toks) { foreach ($toks as $t) $flat[] = $t; }
+//             foreach (array_chunk($flat, 1000) as $chunk) {
+//                 $rs = \DB::connection($c)->table('product_codes_s')
+//                     ->where('tenant_id',$tenant->id)->whereIn('code',$chunk)->get(['id','code']);
+//                 foreach ($rs as $r) $codeIdByToken[$r->code] = (int)$r->id;
+//             }
+
+//             // Per-product queues of code ids
+//             $queue = [];
+//             foreach ($tokensByPid as $pid => $list) {
+//                 $qIds = new \SplQueue();
+//                 foreach ($list as $tok) $qIds->enqueue($codeIdByToken[$tok]);
+//                 $queue[$pid] = $qIds;
+//             }
+
+//             // Cache BOM children
+//             $bomChildren = function(int $pid) use ($tenant,$c) {
+//                 static $cache = [];
+//                 if (!isset($cache[$pid])) {
+//                     $rows = \DB::connection($c)->table('product_components_s')
+//                         ->where('tenant_id',$tenant->id)->where('parent_product_id',$pid)
+//                         ->get(['child_product_id','quantity']);
+//                     $cache[$pid] = $rows->map(fn($r)=>[(int)$r->child_product_id, max(1,(int)ceil((float)$r->quantity))])->all();
+//                 }
+//                 return $cache[$pid];
+//             };
+
+//             $edges = [];
+//             $pair = function(int $parentPid) use (&$pair, $bomChildren, &$edges, &$queue, $tenant) {
+//                 $parentQ = $queue[$parentPid] ?? null; if (!$parentQ) return;
+//                 $spec = $bomChildren($parentPid); if (!$spec) return;
+
+//                 $count = $parentQ->count();
+//                 for ($i=0; $i<$count; $i++) {
+//                     $parentCodeId = $parentQ->dequeue();
+//                     foreach ($spec as [$childPid, $qty]) {
+//                         for ($k=0; $k<$qty; $k++) {
+//                             $childQ = $queue[$childPid] ?? null;
+//                             if (!$childQ || $childQ->isEmpty()) throw new \RuntimeException("Not enough child codes for product $childPid");
+//                             $childCodeId = $childQ->dequeue();
+
+//                             $edges[] = [
+//                                 'tenant_id'=>$tenant->id,
+//                                 'parent_code_id'=>$parentCodeId,
+//                                 'child_code_id'=>$childCodeId,
+//                                 'created_at'=>now(),
+//                                 'updated_at'=>now(),
+//                             ];
+
+//                             // recurse down from this child
+//                             $saved = $queue[$childPid] ?? null;
+//                             $tmp = new \SplQueue(); $tmp->enqueue($childCodeId);
+//                             $queue[$childPid] = $tmp;
+//                             $pair($childPid);
+//                             $queue[$childPid] = $saved;
+//                         }
+//                     }
+//                 }
+//             };
+
+//             $pair((int)$product->id);
+
+//             if ($edges) {
+//                 \DB::connection($c)->table('product_code_edges_s')->insert($edges);
+//                 // convenience parent pointer
+//                 foreach ($edges as $e) {
+//                     \DB::connection($c)->table('product_codes_s')
+//                         ->where('id',$e['child_code_id'])
+//                         ->update(['parent_code_id'=>$e['parent_code_id'],'updated_at'=>now()]);
+//                 }
+//             }
+//         }
+//     }
+//     // === /CODE GRAPH =================================================================================
+
+//     $issuedTotal = array_sum($issuedBySku);
+
+//     return response()->json([
+//         'root_sku'            => (string)$product->sku,
+//         'cascade'             => (bool)$doCascade,
+//         'plan_limits_applied' => $limits,
+//         'print_run_id'        => $rootRunId,
+//         'batch_id'            => $sharedBatchId,
+//         'channel_id'          => $channelId,
+//         'issued'              => (int)$issuedTotal,
+//         'issued_by_sku'       => $issuedBySku,
+//         'labels'              => $labelsRoot, // root only
+//     ], 201);
+// }
+
+// public function mintForProduct(Request $req, $idOrSku)
+// {
+//     // --- tenant ---
+//     if (!method_exists($this, 'tenant') || !method_exists($this, 'sharedConn')) {
+//         // Use the ResolvesTenant trait for these helpers
+//         throw new \RuntimeException('Controller missing tenant/sharedConn helpers');
+//     }
+//     $tenant = $this->tenant($req);
+//     if (!$tenant?->id) return response()->json(['message'=>'Tenant not resolved (missing X-Tenant header or binding)'], 400);
+
+//     // --- validate ---
+//     $data = $req->validate([
+//         'qty'              => ['required','integer','min:1','max:200000'],
+//         'channel_code'     => ['required','string','max:40'],
+//         'batch_code'       => ['nullable','string','max:64'],
+//         'micro_mode'       => ['nullable','in:hmac16,none'],
+//         'create_print_run' => ['sometimes','boolean'],
+//         'print_vendor'     => ['nullable','string','max:120'],
+//         'reel_start'       => ['nullable','string','max:40'],
+//         'reel_end'         => ['nullable','string','max:40'],
+//         'cascade'          => ['sometimes','boolean'],
+//         'batch_mfg_date'   => ['nullable','date'],
+//         'batch_exp_date'   => ['nullable','date','after_or_equal:batch_mfg_date'],
+//         'batch_qty_planned'=> ['nullable','integer','min:1'],
+//         'verification_mode'=> 'required|in:qr,qr_nfc,qr_puf,qr_puf_nfc',
+//         'expires_at'       => 'nullable|date',
+//         'nfc_key_ref'      => 'nullable|string|max:64',
+//         'puf_alg'          => 'nullable|string|max:40',
+//         'puf_score_threshold'=> 'nullable|numeric|min:0|max:100',
+//     ]);
+
+//     $c  = $this->sharedConn();
+//     $tp = \Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
+
+//     // --- resolve product ---
+//     $q = \DB::connection($c)->table($tp)->where('tenant_id',$tenant->id);
+//     $product = is_numeric($idOrSku)
+//         ? $q->where('id',(int)$idOrSku)->first(['id','sku','type'])
+//         : $q->where('sku',$idOrSku)->first(['id','sku','type']);
+//     if (!$product) return response()->json(['message'=>'Unknown product'], 422);
+
+//     $type        = strtolower($product->type ?? 'standard');
+//     $isComposite = $type === 'composite';
+//     $doCascade   = $req->has('cascade') ? $req->boolean('cascade') : $isComposite;
+
+//     // --- required tables ---
+//     foreach (['qr_codes_s','qr_channels_s'] as $t) {
+//         if (!\Schema::connection($c)->hasTable($t)) {
+//             return response()->json(['message'=>"Required table '$t' not present"], 500);
+//         }
+//     }
+
+//     // --- per-root qty map (include root) & composite traversal ---
+//     $qtyPerRoot = [ (int)$product->id => 1 ];
+//     if ($doCascade) {
+//         if (!\Schema::connection($c)->hasTable('product_components_s')) {
+//             return response()->json(['message'=>'Composite product has no components table'], 500);
+//         }
+//         $hasBom = \DB::connection($c)->table('product_components_s')
+//             ->where('tenant_id',$tenant->id)->where('parent_product_id',$product->id)->exists();
+//         if (!$hasBom) return response()->json(['message'=>'Composite product has no components (BOM empty)'], 422);
+
+//         $visitedEdge = []; $stack = [ (int)$product->id ];
+//         while ($stack) {
+//             $parentId = array_pop($stack);
+//             $parentFactor = max(1, (int)ceil($qtyPerRoot[$parentId] ?? 0));
+//             $rows = \DB::connection($c)->table('product_components_s')
+//                 ->where('tenant_id',$tenant->id)->where('parent_product_id',$parentId)
+//                 ->get(['child_product_id','quantity']);
+//             foreach ($rows as $r) {
+//                 $childId = (int)$r->child_product_id;
+//                 $edgeKey = $parentId.':'.$childId;
+//                 if (isset($visitedEdge[$edgeKey])) continue;
+//                 $visitedEdge[$edgeKey] = true;
+//                 $qNeeded = max(1, (int)ceil((float)($r->quantity ?? 0)));
+//                 $qtyPerRoot[$childId] = ($qtyPerRoot[$childId] ?? 0) + ($parentFactor * $qNeeded);
+//                 $stack[] = $childId;
+//             }
+//         }
+//     }
+
+//     // --- scale by requested root qty ---
+//     $rootQty = (int)$data['qty'];
+//     $qtyByProductId = [];
+//     foreach ($qtyPerRoot as $pid => $perRoot) $qtyByProductId[$pid] = (int)$perRoot * $rootQty;
+
+//     // --- fetch meta for SKUs ---
+//     $allIds = array_keys($qtyByProductId);
+//     $meta = \DB::connection($c)->table($tp)
+//         ->where('tenant_id',$tenant->id)->whereIn('id',$allIds)
+//         ->get(['id','sku','type'])->keyBy('id');
+
+//     // --- plan/limits (use your existing helpers if present) ---
+//     $limits = method_exists($this,'planQrLimits') ? $this->planQrLimits($tenant) : [];
+//     $totalToMint = array_sum($qtyByProductId);
+
+//     if (!empty($limits['qr_max_batch'])) {
+//         $maxBatch = (int)$limits['qr_max_batch'];
+//         foreach ($qtyByProductId as $pid => $qPlan) {
+//             if ((int)$qPlan > $maxBatch) {
+//                 return response()->json([
+//                     'message'=>'Batch size exceeds plan limit for at least one SKU.',
+//                     'limit'=>$maxBatch,'sku'=>(string)($meta[$pid]->sku ?? $pid),
+//                     'requested_for_sku'=>(int)$qPlan,
+//                 ], 422);
+//             }
+//         }
+//     }
+//     if (!empty($limits['qr_month']) && method_exists($this,'issuedThisMonth')) {
+//         $used = $this->issuedThisMonth($tenant->id, $c);
+//         $remaining = max(0, (int)$limits['qr_month'] - (int)$used);
+//         if ($totalToMint > $remaining) {
+//             return response()->json([
+//                 'message'=>'Monthly QR limit exceeded.',
+//                 'limit'=>(int)$limits['qr_month'],'used_this_month'=>(int)$used,
+//                 'remaining'=>(int)$remaining,'requested_total'=>(int)$totalToMint,
+//             ], 422);
+//         }
+//     }
+
+//     // --- ensure channel ---
+//     \DB::connection($c)->table('qr_channels_s')->updateOrInsert(
+//         ['tenant_id'=>$tenant->id,'code'=>$data['channel_code']],
+//         ['name'=>$data['channel_code']]
+//     );
+//     $channelId = \DB::connection($c)->table('qr_channels_s')
+//         ->where('tenant_id',$tenant->id)->where('code',$data['channel_code'])->value('id');
+
+//     // --- batch row ---
+//     $sharedBatchId = null;
+//     if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
+//         $existing = \DB::connection($c)->table('product_batches_s')
+//             ->where('tenant_id',$tenant->id)->where('batch_code',$data['batch_code'])
+//             ->first(['id','product_id']);
+//         $qtyPlanned = $data['batch_qty_planned'] ?? $rootQty;
+//         if ($existing) {
+//             if ((int)$existing->product_id !== (int)$product->id) {
+//                 return response()->json(['message'=>'Batch code already used for a different product in this tenant.','batch_code'=>$data['batch_code']], 422);
+//             }
+//             $upd = [];
+//             if (array_key_exists('batch_mfg_date',$data)) $upd['mfg_date']=$data['batch_mfg_date'];
+//             if (array_key_exists('batch_exp_date',$data)) $upd['exp_date']=$data['batch_exp_date'];
+//             if (array_key_exists('batch_qty_planned',$data)) $upd['quantity_planned']=$qtyPlanned;
+//             if ($upd) {
+//                 if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $upd['updated_at']=now();
+//                 \DB::connection($c)->table('product_batches_s')->where('id',$existing->id)->update($upd);
+//             }
+//             $sharedBatchId = $existing->id;
+//         } else {
+//             $ins = [
+//                 'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_code'=>$data['batch_code'],
+//                 'mfg_date'=>$data['batch_mfg_date'] ?? null,'exp_date'=>$data['batch_exp_date'] ?? null,
+//                 'quantity_planned'=>$qtyPlanned,
+//             ];
+//             if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
+//             if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
+//             $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
+//         }
+//     }
+
+//     // --- flags ---
+//     $vmode  = $data['verification_mode'];          // 'qr' | 'qr_nfc' | 'qr_puf' | 'qr_puf_nfc'
+//     $hasNfc = str_contains($vmode, 'nfc');
+//     $hasPuf = str_contains($vmode, 'puf');
+
+//     // --- tenant defaults (adapt to your settings store if different) ---
+//     $nfcDefaultKey = $data['nfc_key_ref'] ?? null;
+//     $pufDefaultAlg = $data['puf_alg'] ?? 'ORBv1';
+//     $pufDefaultThr = $data['puf_score_threshold'] ?? 75.00;
+
+//     $microMode   = $data['micro_mode'] ?? 'hmac16';
+//     $qrExpiryDef = $data['expires_at'] ?? ($data['batch_exp_date'] ?? null);
+
+//     // --- K2/K3 + base url (keep your helpers) ---
+//     $k2 = method_exists($this,'k2ForTenant') ? $this->k2ForTenant($tenant->id) : random_bytes(16);
+//     $k3 = method_exists($this,'k3ForTenant') ? $this->k3ForTenant($tenant->id) : random_bytes(16);
+//     $baseUrl = method_exists($this,'verifyBase') ? $this->verifyBase() : url('');
+
+//     // --- transactional mint (includes NFC reserve/bind & enqueue PUF jobs) ---
+//     return \DB::connection($c)->transaction(function () use (
+//         $c,$tenant,$product,$meta,$qtyByProductId,$rootQty,$sharedBatchId,$channelId,$microMode,$k2,$k3,$qrExpiryDef,
+//         $vmode,$hasNfc,$hasPuf,$nfcDefaultKey,$pufDefaultAlg,$pufDefaultThr
+//     ) {
+//         // print run
+//         $rootRunId = null;
+//         if (\Schema::connection($c)->hasTable('print_runs_s')) {
+//             $rootRunId = \DB::connection($c)->table('print_runs_s')->insertGetId([
+//                 'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_id'=>$sharedBatchId,
+//                 'channel_id'=>$channelId,'vendor_name'=>request('print_vendor'),
+//                 'reel_start'=>request('reel_start'),'reel_end'=>request('reel_end'),
+//                 'qty_planned'=>$rootQty,'created_at'=>now(),
+//             ]);
+//         }
+
+//         // NFC reservation
+//         $totalToMint = array_sum($qtyByProductId);
+//         $nfcReserved = []; $nfc_i = 0; $bindingsNfc = [];
+//         if ($hasNfc) {
+//             if (!\Schema::connection($c)->hasTable('nfc_tags_s')) {
+//                 throw new \RuntimeException('nfc_tags_s table not present');
+//             }
+//             // reserve qc_pass → reserved for this batch/run
+//             $affected = \DB::connection($c)->update("
+//                 UPDATE nfc_tags_s
+//                    SET status='reserved', reserved_at=NOW(), batch_id=?, print_run_id=?
+//                  WHERE tenant_id=? AND status='qc_pass'
+//                  ORDER BY id
+//                  LIMIT ?
+//             ", [$sharedBatchId, $rootRunId, $tenant->id, (int)$totalToMint]);
+
+//             if ($affected < (int)$totalToMint) {
+//                 // rollback partial
+//                 \DB::connection($c)->update("
+//                     UPDATE nfc_tags_s
+//                        SET status='qc_pass', reserved_at=NULL, batch_id=NULL, print_run_id=NULL
+//                      WHERE tenant_id=? AND status='reserved' AND batch_id=? AND print_run_id=?
+//                 ", [$tenant->id, $sharedBatchId, $rootRunId]);
+//                 throw new \RuntimeException("Insufficient NFC inventory (need $totalToMint, got $affected)");
+//             }
+
+//             $nfcReserved = \DB::connection($c)->table('nfc_tags_s')
+//                 ->where('tenant_id',$tenant->id)->where('status','reserved')
+//                 ->where('batch_id',$sharedBatchId)->where('print_run_id',$rootRunId)
+//                 ->orderBy('id')->limit((int)$totalToMint)
+//                 ->get(['id','nfc_uid','nfc_key_ref','ctr_seed'])
+//                 ->map(fn($r)=>['id'=>(int)$r->id,'nfc_uid'=>$r->nfc_uid,'nfc_key_ref'=>$r->nfc_key_ref,'ctr_seed'=>(int)$r->ctr_seed])
+//                 ->all();
+//         }
+
+//         $issuedBySku = []; $labelsRoot = []; $tokensByPid = [];
+
+//         foreach ($qtyByProductId as $pid => $qtyPlan) {
+//             $pid = (int)$pid; $qtyPlan = (int)$qtyPlan;
+//             if ($qtyPlan < 1) { $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = 0; continue; }
+
+//             $rows = [];
+//             for ($i=0; $i<$qtyPlan; $i++) {
+//                 // unique token
+//                 do {
+//                     $token = $this->base64url(random_bytes(16));
+//                     $exists = \DB::connection($c)->table('qr_codes_s')
+//                         ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
+//                 } while ($exists);
+
+//                 // micro/watermark
+//                 $microChk = null; $microCode = null; $wmHash = null;
+//                 if ($microMode === 'hmac16') {
+//                     $microRaw = hash_hmac('sha256', $token, $k3, true);
+//                     $microChk = substr($microRaw, 0, 16);
+//                     $microCode= self::base32Crockford(substr($microRaw,0,8), 13);
+//                     $wmRaw    = hash_hmac('sha256', $token, $k2, true);
+//                     $wmHash   = substr($wmRaw, 0, 16);
+//                 }
+
+//                 // NFC assignment
+//                 $nfcKeyRef = null; $nfcUid = null; $nfcCtr = 0; $nfcTagId = null;
+//                 if ($hasNfc) {
+//                     if (!isset($nfcReserved[$nfc_i])) throw new \RuntimeException('Reserved NFC tags exhausted');
+//                     $tag = $nfcReserved[$nfc_i++];
+//                     $nfcTagId = (int)$tag['id'];
+//                     $nfcKeyRef = $nfcDefaultKey ?? $tag['nfc_key_ref'];
+//                     $nfcUid    = strtoupper($tag['nfc_uid']);
+//                     $nfcCtr    = (int)$tag['ctr_seed'];
+//                 }
+
+//                 // PUF defaults (actual image enrollment is post-print device workflow)
+//                 $pufAlg = $hasPuf ? $pufDefaultAlg : null;
+//                 $pufThr = $hasPuf ? $pufDefaultThr : null;
+
+//                 $rows[] = [
+//                     'tenant_id'       => $tenant->id,
+//                     'token'           => $token,
+//                     'token_ver'       => 1,
+//                     'token_hash'      => hash('sha256',$token),
+//                     'status'          => 'issued',
+//                     'verification_mode'=> $vmode,
+//                     'version'         => 1,
+//                     'product_id'      => $pid,
+//                     'batch_id'        => $sharedBatchId,
+//                     'channel_id'      => $channelId,
+//                     'print_run_id'    => $rootRunId,
+//                     'micro_chk'       => $microChk,
+//                     'watermark_hash'  => $wmHash,
+//                     'human_code'      => $microCode,
+//                     'issued_at'       => now(),
+//                     'expires_at'      => $qrExpiryDef,
+
+//                     // NFC
+//                     'nfc_key_ref'     => $hasNfc ? $nfcKeyRef : null,
+//                     'nfc_uid'         => $hasNfc ? $nfcUid    : null,
+//                     'nfc_ctr_last'    => $hasNfc ? $nfcCtr    : 0,
+
+//                     // PUF
+//                     'puf_id'               => null,
+//                     'puf_fingerprint_hash' => null,
+//                     'puf_alg'              => $pufAlg,
+//                     'puf_score_threshold'  => $pufThr,
+//                 ];
+
+//                 if ($hasNfc && $nfcTagId) $bindingsNfc[] = ['tag_id'=>$nfcTagId, 'token'=>$token];
+
+//                 if ((int)$pid === (int)$product->id) {
+//                     $labelsRoot[] = [
+//                         'token'      => $token,
+//                         'url'        => $baseUrl.'/v/'.$token.'?ch='.rawurlencode(request('channel_code')).'&v=1',
+//                         'micro_code' => $microCode,
+//                         'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
+//                     ];
+//                 }
+//             }
+
+//             \DB::connection($c)->table('qr_codes_s')->insert($rows);
+
+//             // enqueue PUF jobs for these newly inserted rows
+//             if ($hasPuf) {
+//                 $tokens = array_column($rows, 'token');
+//                 $qrRows = \DB::connection($c)->table('qr_codes_s')
+//                           ->where('tenant_id',$tenant->id)->whereIn('token',$tokens)->get(['id']);
+//                 $jobRows = [];
+//                 foreach ($qrRows as $r) {
+//                     $jobRows[] = [
+//                         'tenant_id'=>$tenant->id,'qr_code_id'=>(int)$r->id,
+//                         'batch_id'=>$sharedBatchId,'print_run_id'=>$rootRunId,
+//                         'status'=>'queued','created_at'=>now(),'updated_at'=>now(),
+//                     ];
+//                 }
+//                 if ($jobRows) \DB::connection($c)->table('puf_jobs_s')->insert($jobRows);
+//             }
+
+//             $tokensByPid[$pid] = array_column($rows, 'token');
+//             $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = $qtyPlan;
+//         }
+
+//         // backfill NFC reverse link and mark bound
+//         if ($hasNfc && $bindingsNfc) {
+//             $tokens = array_values(array_unique(array_column($bindingsNfc,'token')));
+//             $tokenToId = [];
+//             foreach (array_chunk($tokens, 1000) as $chunk) {
+//                 $rs = \DB::connection($c)->table('qr_codes_s')
+//                       ->where('tenant_id',$tenant->id)->whereIn('token',$chunk)->get(['id','token']);
+//                 foreach ($rs as $r) $tokenToId[$r->token] = (int)$r->id;
+//             }
+//             foreach ($bindingsNfc as $b) {
+//                 $qrId = $tokenToId[$b['token']] ?? null; if (!$qrId) continue;
+//                 \DB::connection($c)->table('nfc_tags_s')
+//                   ->where('tenant_id',$tenant->id)->where('id',(int)$b['tag_id'])
+//                   ->update(['qr_code_id'=>$qrId,'status'=>'bound','bound_at'=>now(),'updated_at'=>now()]);
+//             }
+//         }
+
+//         // (optional) code graph etc… keep your existing logic here if you maintain product_codes_s / edges
+
+//         $issuedTotal = array_sum($issuedBySku);
+//         return response()->json([
+//             'root_sku'            => (string)$product->sku,
+//             'cascade'             => (bool)$doCascade,
+//             'plan_limits_applied' => $limits ?? [],
+//             'print_run_id'        => $rootRunId,
+//             'batch_id'            => $sharedBatchId,
+//             'channel_id'          => $channelId,
+//             'issued'              => (int)$issuedTotal,
+//             'issued_by_sku'       => $issuedBySku,
+//             'labels'              => $labelsRoot,
+//         ], 201);
+//     });
+// }
+
+// public function mintForProduct(Request $req, $idOrSku)
+// {
+//     // --- tenant helpers required ---
+//     if (!method_exists($this, 'tenant') || !method_exists($this, 'sharedConn')) {
+//         throw new \RuntimeException('Controller missing tenant/sharedConn helpers');
+//     }
+
+//     // --- tenant ---
+//     $tenant = $this->tenant($req);
+//     if (!$tenant?->id) {
+//         return response()->json(['message'=>'Tenant not resolved (missing X-Tenant header or binding)'], 400);
+//     }
+
+//     // --- validate request ---
+//     $data = $req->validate([
+//         'qty'                 => ['required','integer','min:1','max:200000'],
+//         'channel_code'        => ['required','string','max:40'],
+//         'batch_code'          => ['nullable','string','max:64'],
+//         'micro_mode'          => ['nullable','in:hmac16,none'],
+//         'create_print_run'    => ['sometimes','boolean'],
+//         'print_vendor'        => ['nullable','string','max:120'],
+//         'reel_start'          => ['nullable','string','max:40'],
+//         'reel_end'            => ['nullable','string','max:40'],
+//         'cascade'             => ['sometimes','boolean'],
+//         'batch_mfg_date'      => ['nullable','date'],
+//         'batch_exp_date'      => ['nullable','date','after_or_equal:batch_mfg_date'],
+//         'batch_qty_planned'   => ['nullable','integer','min:1'],
+//         'verification_mode'   => 'required|in:qr,qr_nfc,qr_puf,qr_puf_nfc',
+//         'expires_at'          => 'nullable|date',
+//         'nfc_key_ref'         => 'nullable|string|max:64',
+//         'puf_alg'             => 'nullable|string|max:40',
+//         'puf_score_threshold' => 'nullable|numeric|min:0|max:100',
+//     ]);
+
+//     $c  = $this->sharedConn();
+//     $tp = \Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
+
+//     // --- resolve product ---
+//     $q = \DB::connection($c)->table($tp)->where('tenant_id', $tenant->id);
+//     $product = is_numeric($idOrSku)
+//         ? $q->where('id', (int)$idOrSku)->first(['id','sku','type'])
+//         : $q->where('sku', $idOrSku)->first(['id','sku','type']);
+//     if (!$product) return response()->json(['message'=>'Unknown product'], 422);
+
+//     $type        = strtolower($product->type ?? 'standard');
+//     $isComposite = $type === 'composite';
+//     $doCascade   = $req->has('cascade') ? $req->boolean('cascade') : $isComposite;
+
+//     // --- required tables ---
+//     foreach (['qr_codes_s','qr_channels_s'] as $t) {
+//         if (!\Schema::connection($c)->hasTable($t)) {
+//             return response()->json(['message'=>"Required table '$t' not present"], 500);
+//         }
+//     }
+
+//     // --- quantity per product (BOM traverse if composite) ---
+//     $qtyPerRoot = [ (int)$product->id => 1 ];
+//     if ($doCascade) {
+//         if (!\Schema::connection($c)->hasTable('product_components_s')) {
+//             return response()->json(['message'=>'Composite product has no components table'], 500);
+//         }
+//         $hasBom = \DB::connection($c)->table('product_components_s')
+//             ->where('tenant_id',$tenant->id)->where('parent_product_id',$product->id)->exists();
+//         if (!$hasBom) return response()->json(['message'=>'Composite product has no components (BOM empty)'], 422);
+
+//         $visitedEdge = []; $stack = [ (int)$product->id ];
+//         while ($stack) {
+//             $parentId = array_pop($stack);
+//             $parentFactor = max(1, (int)ceil($qtyPerRoot[$parentId] ?? 0));
+//             $rows = \DB::connection($c)->table('product_components_s')
+//                 ->where('tenant_id',$tenant->id)->where('parent_product_id',$parentId)
+//                 ->get(['child_product_id','quantity']);
+//             foreach ($rows as $r) {
+//                 $childId = (int)$r->child_product_id;
+//                 $edgeKey = $parentId.':'.$childId;
+//                 if (isset($visitedEdge[$edgeKey])) continue;
+//                 $visitedEdge[$edgeKey] = true;
+//                 $qNeeded = max(1, (int)ceil((float)($r->quantity ?? 0)));
+//                 $qtyPerRoot[$childId] = ($qtyPerRoot[$childId] ?? 0) + ($parentFactor * $qNeeded);
+//                 $stack[] = $childId;
+//             }
+//         }
+//     }
+
+//     // --- scale by requested root qty ---
+//     $rootQty = (int)$data['qty'];
+//     $qtyByProductId = [];
+//     foreach ($qtyPerRoot as $pid => $perRoot) $qtyByProductId[$pid] = (int)$perRoot * $rootQty;
+
+//     // --- meta for SKUs ---
+//     $allIds = array_keys($qtyByProductId);
+//     $meta = \DB::connection($c)->table($tp)
+//         ->where('tenant_id',$tenant->id)->whereIn('id',$allIds)
+//         ->get(['id','sku','type'])->keyBy('id');
+
+//     // --- plan/limits ---
+//     $limits = method_exists($this,'planQrLimits') ? $this->planQrLimits($tenant) : [];
+//     $totalToMint = array_sum($qtyByProductId);
+//     if (!empty($limits['qr_max_batch'])) {
+//         $maxBatch = (int)$limits['qr_max_batch'];
+//         foreach ($qtyByProductId as $pid => $qPlan) {
+//             if ((int)$qPlan > $maxBatch) {
+//                 return response()->json([
+//                     'message'=>'Batch size exceeds plan limit for at least one SKU.',
+//                     'limit'=>$maxBatch,'sku'=>(string)($meta[$pid]->sku ?? $pid),
+//                     'requested_for_sku'=>(int)$qPlan,
+//                 ], 422);
+//             }
+//         }
+//     }
+//     if (!empty($limits['qr_month']) && method_exists($this,'issuedThisMonth')) {
+//         $used = $this->issuedThisMonth($tenant->id, $c);
+//         $remaining = max(0, (int)$limits['qr_month'] - (int)$used);
+//         if ($totalToMint > $remaining) {
+//             return response()->json([
+//                 'message'=>'Monthly QR limit exceeded.',
+//                 'limit'=>(int)$limits['qr_month'],'used_this_month'=>(int)$used,
+//                 'remaining'=>(int)$remaining,'requested_total'=>(int)$totalToMint,
+//             ], 422);
+//         }
+//     }
+
+//     // --- ensure channel ---
+//     \DB::connection($c)->table('qr_channels_s')->updateOrInsert(
+//         ['tenant_id'=>$tenant->id,'code'=>$data['channel_code']],
+//         ['name'=>$data['channel_code']]
+//     );
+//     $channelId = \DB::connection($c)->table('qr_channels_s')
+//         ->where('tenant_id',$tenant->id)->where('code',$data['channel_code'])->value('id');
+
+//     // --- batch row (shared for root product) ---
+//     $sharedBatchId = null;
+//     if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
+//         $existing = \DB::connection($c)->table('product_batches_s')
+//             ->where('tenant_id',$tenant->id)->where('batch_code',$data['batch_code'])
+//             ->first(['id','product_id']);
+//         $qtyPlanned = $data['batch_qty_planned'] ?? $rootQty;
+//         if ($existing) {
+//             if ((int)$existing->product_id !== (int)$product->id) {
+//                 return response()->json(['message'=>'Batch code already used for a different product in this tenant.','batch_code'=>$data['batch_code']], 422);
+//             }
+//             $upd = [];
+//             if (array_key_exists('batch_mfg_date',$data)) $upd['mfg_date']=$data['batch_mfg_date'];
+//             if (array_key_exists('batch_exp_date',$data)) $upd['exp_date']=$data['batch_exp_date'];
+//             if (array_key_exists('batch_qty_planned',$data)) $upd['quantity_planned']=$qtyPlanned;
+//             if ($upd) {
+//                 if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $upd['updated_at']=now();
+//                 \DB::connection($c)->table('product_batches_s')->where('id',$existing->id)->update($upd);
+//             }
+//             $sharedBatchId = $existing->id;
+//         } else {
+//             $ins = [
+//                 'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_code'=>$data['batch_code'],
+//                 'mfg_date'=>$data['batch_mfg_date'] ?? null,'exp_date'=>$data['batch_exp_date'] ?? null,
+//                 'quantity_planned'=>$qtyPlanned,
+//             ];
+//             if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
+//             if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
+//             $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
+//         }
+//     }
+
+//     // --- flags/defaults ---
+//     $vmode  = $data['verification_mode']; // 'qr' | 'qr_nfc' | 'qr_puf' | 'qr_puf_nfc'
+//     $hasNfc = str_contains($vmode, 'nfc');
+//     $hasPuf = str_contains($vmode, 'puf');
+
+//     $nfcDefaultKey = $data['nfc_key_ref'] ?? null;
+//     $pufDefaultAlg = $data['puf_alg'] ?? 'ORBv1';
+//     $pufDefaultThr = $data['puf_score_threshold'] ?? 75.00;
+
+//     $microMode   = $data['micro_mode'] ?? 'hmac16';
+//     $qrExpiryDef = $data['expires_at'] ?? ($data['batch_exp_date'] ?? null);
+
+//     // --- keys/base url (use your existing helpers if present) ---
+//     $k2 = method_exists($this,'k2ForTenant') ? $this->k2ForTenant($tenant->id) : random_bytes(16);
+//     $k3 = method_exists($this,'k3ForTenant') ? $this->k3ForTenant($tenant->id) : random_bytes(16);
+//     $baseUrl = method_exists($this,'verifyBase') ? $this->verifyBase() : url('');
+
+//     // --- schema guards for NFC/PUF columns to prevent silent insert failures ---
+//     if ($hasNfc) {
+//         foreach (['nfc_key_ref','nfc_uid','nfc_ctr_last'] as $col) {
+//             if (!\Schema::connection($c)->hasColumn('qr_codes_s', $col)) {
+//                 return response()->json(['message'=>"qr_codes_s is missing required column: $col (NFC mode)"], 500);
+//             }
+//         }
+//         if (!\Schema::connection($c)->hasTable('nfc_tags_s')) {
+//             return response()->json(['message'=>'nfc_tags_s table not present'], 500);
+//         }
+//     }
+//     if ($hasPuf) {
+//         foreach (['puf_id','puf_fingerprint_hash','puf_alg','puf_score_threshold'] as $col) {
+//             if (!\Schema::connection($c)->hasColumn('qr_codes_s', $col)) {
+//                 return response()->json(['message'=>"qr_codes_s is missing required column: $col (PUF mode)"], 500);
+//             }
+//         }
+//         if (!\Schema::connection($c)->hasTable('puf_jobs_s')) {
+//             return response()->json(['message'=>'puf_jobs_s table not present'], 500);
+//         }
+//     }
+
+//     // --- transactional body with detailed error handling ---
+//     try {
+//         return \DB::connection($c)->transaction(function () use (
+//             $c,$tenant,$product,$meta,$qtyByProductId,$rootQty,$sharedBatchId,$channelId,$microMode,$k2,$k3,$qrExpiryDef,
+//             $vmode,$hasNfc,$hasPuf,$nfcDefaultKey,$pufDefaultAlg,$pufDefaultThr,$limits
+//         ) {
+//             // print run
+//             $rootRunId = null;
+//             if (\Schema::connection($c)->hasTable('print_runs_s')) {
+//                 $rootRunId = \DB::connection($c)->table('print_runs_s')->insertGetId([
+//                     'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_id'=>$sharedBatchId,
+//                     'channel_id'=>$channelId,'vendor_name'=>request('print_vendor'),
+//                     'reel_start'=>request('reel_start'),'reel_end'=>request('reel_end'),
+//                     'qty_planned'=>$rootQty,'created_at'=>now(),
+//                 ]);
+//             }
+
+//             // NFC reservation (transactional, lock-first)
+//             $totalToMint = array_sum($qtyByProductId);
+//             $nfcReserved = []; $nfc_i = 0; $bindingsNfc = [];
+//             if ($hasNfc) {
+//                 $toLock = \DB::connection($c)->table('nfc_tags_s')
+//                     ->where('tenant_id', $tenant->id)
+//                     ->where('status', 'qc_pass')
+//                     ->orderBy('id')
+//                     ->limit((int)$totalToMint)
+//                     ->lockForUpdate()
+//                     ->get(['id','nfc_uid','nfc_key_ref','ctr_seed']);
+
+//                 if ($toLock->count() < (int)$totalToMint) {
+//                     throw new \RuntimeException('INSUFFICIENT_NFC:'.$totalToMint.':'.$toLock->count());
+//                 }
+
+//                 $ids = $toLock->pluck('id')->all();
+//                 \DB::connection($c)->table('nfc_tags_s')
+//                     ->where('tenant_id', $tenant->id)
+//                     ->whereIn('id', $ids)
+//                     ->update([
+//                         'status'       => 'reserved',
+//                         'reserved_at'  => now(),
+//                         'batch_id'     => $sharedBatchId,
+//                         'print_run_id' => $rootRunId,
+//                         'updated_at'   => now(),
+//                     ]);
+
+//                 $nfcReserved = $toLock->map(fn($r)=>[
+//                     'id'=>(int)$r->id,'nfc_uid'=>$r->nfc_uid,'nfc_key_ref'=>$r->nfc_key_ref,'ctr_seed'=>(int)$r->ctr_seed
+//                 ])->values()->all();
+//             }
+
+//             $issuedBySku = []; $labelsRoot = []; $tokensByPid = [];
+
+//             foreach ($qtyByProductId as $pid => $qtyPlan) {
+//                 $pid = (int)$pid; $qtyPlan = (int)$qtyPlan;
+//                 if ($qtyPlan < 1) { $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = 0; continue; }
+
+//                 $rows = [];
+//                 for ($i=0; $i<$qtyPlan; $i++) {
+//                     // unique token
+//                     do {
+//                         $token = $this->base64url(random_bytes(16));
+//                         $exists = \DB::connection($c)->table('qr_codes_s')
+//                             ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
+//                     } while ($exists);
+
+//                     // micro/watermark
+//                     $microChk = null; $microCode = null; $wmHash = null;
+//                     if ($microMode === 'hmac16') {
+//                         $microRaw = hash_hmac('sha256', $token, $k3, true);
+//                         $microChk = substr($microRaw, 0, 16);
+//                         $microCode= self::base32Crockford(substr($microRaw,0,8), 13);
+//                         $wmRaw    = hash_hmac('sha256', $token, $k2, true);
+//                         $wmHash   = substr($wmRaw, 0, 16);
+//                     }
+
+//                     // NFC assignment
+//                     $nfcKeyRef = null; $nfcUid = null; $nfcCtr = 0; $nfcTagId = null;
+//                     if ($hasNfc) {
+//                         if (!isset($nfcReserved[$nfc_i])) {
+//                             throw new \RuntimeException('Reserved NFC tags exhausted');
+//                         }
+//                         $tag = $nfcReserved[$nfc_i++];
+//                         $nfcTagId = (int)$tag['id'];
+//                         $nfcKeyRef = $nfcDefaultKey ?? $tag['nfc_key_ref'];
+//                         $nfcUid    = strtoupper($tag['nfc_uid']);
+//                         $nfcCtr    = (int)$tag['ctr_seed'];
+//                     }
+
+//                     // PUF defaults (enrollment later via device)
+//                     $pufAlg = $hasPuf ? $pufDefaultAlg : null;
+//                     $pufThr = $hasPuf ? $pufDefaultThr : null;
+
+//                     $rows[] = [
+//                         'tenant_id'        => $tenant->id,
+//                         'token'            => $token,
+//                         'token_ver'        => 1,
+//                         'token_hash'       => hash('sha256',$token),
+//                         'status'           => 'issued',
+//                         'verification_mode'=> $vmode,
+//                         'version'          => 1,
+//                         'product_id'       => $pid,
+//                         'batch_id'         => $sharedBatchId,
+//                         'channel_id'       => $channelId,
+//                         'print_run_id'     => $rootRunId,
+//                         'micro_chk'        => $microChk,
+//                         'watermark_hash'   => $wmHash,
+//                         'human_code'       => $microCode,
+//                         'issued_at'        => now(),
+//                         'expires_at'       => $qrExpiryDef,
+
+//                         // NFC
+//                         'nfc_key_ref'      => $hasNfc ? $nfcKeyRef : null,
+//                         'nfc_uid'          => $hasNfc ? $nfcUid    : null,
+//                         'nfc_ctr_last'     => $hasNfc ? $nfcCtr    : 0,
+
+//                         // PUF
+//                         'puf_id'               => null,
+//                         'puf_fingerprint_hash' => null,
+//                         'puf_alg'              => $pufAlg,
+//                         'puf_score_threshold'  => $pufThr,
+//                     ];
+
+//                     if ($hasNfc && $nfcTagId) $bindingsNfc[] = ['tag_id'=>$nfcTagId,'token'=>$token];
+
+//                     if ((int)$pid === (int)$product->id) {
+//                         $labelsRoot[] = [
+//                             'token'      => $token,
+//                             'url'        => $baseUrl.'/v/'.$token.'?ch='.rawurlencode(request('channel_code')).'&v=1',
+//                             'micro_code' => $microCode,
+//                             'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
+//                         ];
+//                     }
+//                 }
+
+//                 // INSERT QR rows
+//                 \DB::connection($c)->table('qr_codes_s')->insert($rows);
+
+//                 // Map tokens -> ids for this chunk
+//                 $insertedTokens = array_column($rows, 'token');
+//                 $qrMap = \DB::connection($c)->table('qr_codes_s')
+//                     ->where('tenant_id',$tenant->id)->whereIn('token',$insertedTokens)
+//                     ->pluck('id', 'token')->all();
+//                 if (count($qrMap) !== count($insertedTokens)) {
+//                     throw new \RuntimeException('Inserted QR rows not found for binding (token->id map incomplete)');
+//                 }
+
+//                 // Enqueue PUF jobs (if requested)
+//                 if ($hasPuf) {
+//                     $jobRows = [];
+//                     foreach ($insertedTokens as $tok) {
+//                         $qrId = (int)($qrMap[$tok] ?? 0);
+//                         if (!$qrId) continue;
+//                         $jobRows[] = [
+//                             'tenant_id'=>$tenant->id,'qr_code_id'=>$qrId,
+//                             'batch_id'=>$sharedBatchId,'print_run_id'=>$rootRunId,
+//                             'status'=>'queued','created_at'=>now(),'updated_at'=>now(),
+//                         ];
+//                     }
+//                     if ($jobRows) \DB::connection($c)->table('puf_jobs_s')->insert($jobRows);
+//                 }
+
+//                 // NFC reverse binding for this chunk (after we have QR IDs)
+//                 if ($hasNfc && $bindingsNfc) {
+//                     foreach ($bindingsNfc as $b) {
+//                         $qrId = (int)($qrMap[$b['token']] ?? 0);
+//                         if (!$qrId) continue;
+//                         \DB::connection($c)->table('nfc_tags_s')
+//                             ->where('tenant_id',$tenant->id)->where('id',(int)$b['tag_id'])
+//                             ->update([
+//                                 'qr_code_id' => $qrId,
+//                                 'status'     => 'bound',
+//                                 'bound_at'   => now(),
+//                                 'updated_at' => now(),
+//                             ]);
+//                     }
+//                 }
+
+//                 $tokensByPid[$pid] = $insertedTokens;
+//                 $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = $qtyPlan;
+//                 $bindingsNfc = []; // reset after binding this chunk
+//             }
+
+//             $issuedTotal = array_sum($issuedBySku);
+
+//             return response()->json([
+//                 'root_sku'            => (string)$product->sku,
+//                 'cascade'             => (bool)$doCascade,
+//                 'plan_limits_applied' => $limits ?? [],
+//                 'print_run_id'        => $rootRunId,
+//                 'batch_id'            => $sharedBatchId,
+//                 'channel_id'          => $channelId,
+//                 'issued'              => (int)$issuedTotal,
+//                 'issued_by_sku'       => $issuedBySku,
+//                 'labels'              => $labelsRoot,
+//             ], 201);
+//         }, 3);
+//     } catch (\Throwable $e) {
+//         // Map known reservation failure
+//         $msg = $e->getMessage();
+//         if (str_starts_with($msg, 'INSUFFICIENT_NFC:')) {
+//             // format: INSUFFICIENT_NFC:<need>:<have>
+//             $parts = explode(':', $msg);
+//             $need  = isset($parts[1]) ? (int)$parts[1] : null;
+//             $have  = isset($parts[2]) ? (int)$parts[2] : null;
+
+//             \Log::warning('Mint NFC insufficient', [
+//                 'tenant_id'=>$tenant->id,'need'=>$need,'have'=>$have
+//             ]);
+
+//             return response()->json([
+//                 'message'  => 'Insufficient NFC inventory.',
+//                 'needed'   => $need,
+//                 'available'=> $have,
+//                 'hint'     => 'Import NFC tags with status=qc_pass for this tenant before minting qr_nfc/qr_puf_nfc.',
+//             ], 422);
+//         }
+
+//         // Log anything else and surface cleanly
+//         \Log::error('mintForProduct failed', [
+//             'tenant_id'=>$tenant->id,
+//             'product_id'=>$product->id ?? null,
+//             'error'     =>$e->getMessage(),
+//             'file'      =>$e->getFile(),
+//             'line'      =>$e->getLine(),
+//         ]);
+
+//         return response()->json([
+//             'message' => 'Mint failed',
+//             'error'   => $e->getMessage(), // shows actual SQL/constraint error for quick debugging
+//         ], 422);
+//     }
+// }
+
+
+
 public function mintForProduct(Request $req, $idOrSku)
 {
-    $tenant = $this->tenant($req);
-    if (!$tenant?->id) {
-        return response()->json(['message'=>'Tenant not resolved (missing X-Tenant header or binding)'], 400);
+    // --- tenant helpers required ---
+    if (!method_exists($this, 'tenant') || !method_exists($this, 'sharedConn')) {
+        throw new \RuntimeException('Controller missing tenant/sharedConn helpers');
     }
 
+    // --- tenant ---
+    $tenant = $this->tenant($req);
+    if (!$tenant?->id) {
+        return response()->json(['message' => 'Tenant not resolved (missing X-Tenant header or binding)'], 400);
+    }
+
+    // --- validate request ---
     $data = $req->validate([
-        'qty'              => ['required','integer','min:1','max:200000'],
-        'channel_code'     => ['required','string','max:40'],
-        'batch_code'       => ['nullable','string','max:64'],
-        'micro_mode'       => ['nullable','in:hmac16,none'],
-        'create_print_run' => ['sometimes','boolean'],
-        'print_vendor'     => ['nullable','string','max:120'],
-        'reel_start'       => ['nullable','string','max:40'],
-        'reel_end'         => ['nullable','string','max:40'],
-        'cascade'          => ['sometimes','boolean'], // default true for composite
+        'qty'                 => ['required','integer','min:1','max:200000'],
+        'channel_code'        => ['required','string','max:40'],
+        'batch_code'          => ['nullable','string','max:64'],
+        'micro_mode'          => ['nullable','in:hmac16,none'],
+        'create_print_run'    => ['sometimes','boolean'],
+        'print_vendor'        => ['nullable','string','max:120'],
+        'reel_start'          => ['nullable','string','max:40'],
+        'reel_end'            => ['nullable','string','max:40'],
+        'cascade'             => ['sometimes','boolean'],
 
-        'batch_mfg_date'     => ['nullable','date'],
-        'batch_exp_date'     => ['nullable','date','after_or_equal:batch_mfg_date'],
-        'batch_qty_planned'  => ['nullable','integer','min:1'], // optional; default = root qty
+        'batch_mfg_date'      => ['nullable','date'],
+        'batch_exp_date'      => ['nullable','date','after_or_equal:batch_mfg_date'],
+        'batch_qty_planned'   => ['nullable','integer','min:1'],
 
+        'verification_mode'   => 'required|in:qr,qr_nfc,qr_puf,qr_puf_nfc',
+        'expires_at'          => 'nullable|date',
 
-        // NEW (required by your UI mint dialog)
-        'verification_mode' => 'required|in:qr,qr_nfc,qr_puf,qr_puf_nfc,puf_nfc',
-
-        // Optional (if you want to allow overrides at mint-time)
-        'expires_at'         => 'nullable|date',
-        'nfc_key_ref'        => 'nullable|string|max:64',
-        'puf_alg'            => 'nullable|string|max:40',
-        'puf_score_threshold'=> 'nullable|numeric|min:0|max:100',
+        'nfc_key_ref'         => 'nullable|string|max:64',
+        'puf_alg'             => 'nullable|string|max:40',
+        'puf_score_threshold' => 'nullable|numeric|min:0|max:100',
     ]);
 
     $c  = $this->sharedConn();
     $tp = \Schema::connection($c)->hasTable('products_s') ? 'products_s' : 'products';
 
-    // Resolve product
-    $q = \DB::connection($c)->table($tp)->where('tenant_id',$tenant->id);
+    // --- resolve product ---
+    $q = \DB::connection($c)->table($tp)->where('tenant_id', $tenant->id);
     $product = is_numeric($idOrSku)
-        ? $q->where('id',(int)$idOrSku)->first(['id','sku','type'])
-        : $q->where('sku',$idOrSku)->first(['id','sku','type']);
-    if (!$product) return response()->json(['message'=>'Unknown product'], 422);
+        ? $q->where('id', (int)$idOrSku)->first(['id','sku','type'])
+        : $q->where('sku', $idOrSku)->first(['id','sku','type']);
+    if (!$product) return response()->json(['message' => 'Unknown product'], 422);
 
     $type        = strtolower($product->type ?? 'standard');
     $isComposite = $type === 'composite';
     $doCascade   = $req->has('cascade') ? $req->boolean('cascade') : $isComposite;
 
-    // Required tables
+    // --- required tables ---
     foreach (['qr_codes_s','qr_channels_s'] as $t) {
         if (!\Schema::connection($c)->hasTable($t)) {
-            return response()->json(['message'=>"Required table '$t' not present"], 500);
+            return response()->json(['message' => "Required table '$t' not present"], 500);
         }
     }
 
-    // Per-root qty map; include root
+    // --- quantity per product (BOM traverse if composite) ---
     $qtyPerRoot = [ (int)$product->id => 1 ];
-
     if ($doCascade) {
         if (!\Schema::connection($c)->hasTable('product_components_s')) {
-            return response()->json(['message'=>'Composite product has no components table'], 500);
+            return response()->json(['message' => 'Composite product has no components table'], 500);
         }
         $hasBom = \DB::connection($c)->table('product_components_s')
             ->where('tenant_id',$tenant->id)->where('parent_product_id',$product->id)->exists();
-        if (!$hasBom) {
-            return response()->json(['message'=>'Composite product has no components (BOM empty)'], 422);
-        }
+        if (!$hasBom) return response()->json(['message' => 'Composite product has no components (BOM empty)'], 422);
 
-        // Traverse BOM multi-level; accumulate per-root quantities
-        $visitedEdge = [];
-        $stack = [ (int)$product->id ];
+        $visitedEdge = []; $stack = [ (int)$product->id ];
         while ($stack) {
             $parentId = array_pop($stack);
             $parentFactor = max(1, (int)ceil($qtyPerRoot[$parentId] ?? 0));
-
             $rows = \DB::connection($c)->table('product_components_s')
                 ->where('tenant_id',$tenant->id)->where('parent_product_id',$parentId)
                 ->get(['child_product_id','quantity']);
-
             foreach ($rows as $r) {
                 $childId = (int)$r->child_product_id;
-                $edgeKey = $parentId.':'.$childId;
+                $edgeKey = $parentId . ':' . $childId;
                 if (isset($visitedEdge[$edgeKey])) continue;
                 $visitedEdge[$edgeKey] = true;
-
                 $qNeeded = max(1, (int)ceil((float)($r->quantity ?? 0)));
                 $qtyPerRoot[$childId] = ($qtyPerRoot[$childId] ?? 0) + ($parentFactor * $qNeeded);
                 $stack[] = $childId;
@@ -229,46 +1472,48 @@ public function mintForProduct(Request $req, $idOrSku)
         }
     }
 
-    // Scale by requested root qty
+    // --- scale by requested root qty ---
     $rootQty = (int)$data['qty'];
     $qtyByProductId = [];
     foreach ($qtyPerRoot as $pid => $perRoot) $qtyByProductId[$pid] = (int)$perRoot * $rootQty;
 
-    // SKUs for affected products
+    // --- meta for SKUs ---
     $allIds = array_keys($qtyByProductId);
     $meta = \DB::connection($c)->table($tp)
         ->where('tenant_id',$tenant->id)->whereIn('id',$allIds)
         ->get(['id','sku','type'])->keyBy('id');
 
-    // Plan/limits
-    $limits = $this->planQrLimits($tenant);
+    // --- plan/limits ---
+    $limits = method_exists($this,'planQrLimits') ? $this->planQrLimits($tenant) : [];
     $totalToMint = array_sum($qtyByProductId);
-
     if (!empty($limits['qr_max_batch'])) {
         $maxBatch = (int)$limits['qr_max_batch'];
         foreach ($qtyByProductId as $pid => $qPlan) {
             if ((int)$qPlan > $maxBatch) {
                 return response()->json([
-                    'message'=>'Batch size exceeds plan limit for at least one SKU.',
-                    'limit'=>$maxBatch,'sku'=>(string)($meta[$pid]->sku ?? $pid),
-                    'requested_for_sku'=>(int)$qPlan,
+                    'message' => 'Batch size exceeds plan limit for at least one SKU.',
+                    'limit'   => $maxBatch,
+                    'sku'     => (string)($meta[$pid]->sku ?? $pid),
+                    'requested_for_sku' => (int)$qPlan,
                 ], 422);
             }
         }
     }
-    if (!empty($limits['qr_month'])) {
+    if (!empty($limits['qr_month']) && method_exists($this,'issuedThisMonth')) {
         $used = $this->issuedThisMonth($tenant->id, $c);
         $remaining = max(0, (int)$limits['qr_month'] - (int)$used);
         if ($totalToMint > $remaining) {
             return response()->json([
-                'message'=>'Monthly QR limit exceeded.',
-                'limit'=>(int)$limits['qr_month'],'used_this_month'=>(int)$used,
-                'remaining'=>(int)$remaining,'requested_total'=>(int)$totalToMint,
+                'message'         => 'Monthly QR limit exceeded.',
+                'limit'           => (int)$limits['qr_month'],
+                'used_this_month' => (int)$used,
+                'remaining'       => (int)$remaining,
+                'requested_total' => (int)$totalToMint,
             ], 422);
         }
     }
 
-    // Ensure channel
+    // --- ensure channel ---
     \DB::connection($c)->table('qr_channels_s')->updateOrInsert(
         ['tenant_id'=>$tenant->id,'code'=>$data['channel_code']],
         ['name'=>$data['channel_code']]
@@ -276,311 +1521,302 @@ public function mintForProduct(Request $req, $idOrSku)
     $channelId = \DB::connection($c)->table('qr_channels_s')
         ->where('tenant_id',$tenant->id)->where('code',$data['channel_code'])->value('id');
 
-    // ONE shared batch row per (tenant,batch_code) with product_id = root
-    // $sharedBatchId = null;
-    // if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
-    //     $existing = \DB::connection($c)->table('product_batches_s')
-    //         ->where('tenant_id',$tenant->id)->where('batch_code',$data['batch_code'])
-    //         ->first(['id']);
-    //     if ($existing) {
-    //         $sharedBatchId = $existing->id;
-    //     } else {
-    //         $ins = ['tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_code'=>$data['batch_code']];
-    //         if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
-    //         if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
-    //         $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
-    //     }
-    // }
-
-    // ONE shared batch row per (tenant,batch_code) with product_id = root
-$sharedBatchId = null;
-if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
-    $existing = \DB::connection($c)->table('product_batches_s')
-        ->where('tenant_id',$tenant->id)
-        ->where('batch_code',$data['batch_code'])
-        ->first(['id','product_id','mfg_date','exp_date','quantity_planned']);
-
-    $qtyPlanned = $data['batch_qty_planned'] ?? $rootQty; // default to root qty
-    $ins = [
-        'tenant_id'  => $tenant->id,
-        'product_id' => $product->id,
-        'batch_code' => $data['batch_code'],
-        'mfg_date'   => $data['batch_mfg_date'] ?? null,
-        'exp_date'   => $data['batch_exp_date'] ?? null,
-        'quantity_planned' => $qtyPlanned,
-    ];
-
-    if ($existing) {
-        if ((int)$existing->product_id !== (int)$product->id) {
-            return response()->json([
-                'message' => 'Batch code already used for a different product in this tenant.',
-                'batch_code' => $data['batch_code'],
-            ], 422);
+    // --- batch row (shared for root product) ---
+    $sharedBatchId = null;
+    if (!empty($data['batch_code']) && \Schema::connection($c)->hasTable('product_batches_s')) {
+        $existing = \DB::connection($c)->table('product_batches_s')
+            ->where('tenant_id',$tenant->id)->where('batch_code',$data['batch_code'])
+            ->first(['id','product_id']);
+        $qtyPlanned = $data['batch_qty_planned'] ?? $rootQty;
+        if ($existing) {
+            if ((int)$existing->product_id !== (int)$product->id) {
+                return response()->json([
+                    'message'    => 'Batch code already used for a different product in this tenant.',
+                    'batch_code' => $data['batch_code'],
+                ], 422);
+            }
+            $upd = [];
+            if (array_key_exists('batch_mfg_date',$data)) $upd['mfg_date']=$data['batch_mfg_date'];
+            if (array_key_exists('batch_exp_date',$data)) $upd['exp_date']=$data['batch_exp_date'];
+            if (array_key_exists('batch_qty_planned',$data)) $upd['quantity_planned']=$qtyPlanned;
+            if ($upd) {
+                if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $upd['updated_at']=now();
+                \DB::connection($c)->table('product_batches_s')->where('id',$existing->id)->update($upd);
+            }
+            $sharedBatchId = $existing->id;
+        } else {
+            $ins = [
+                'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_code'=>$data['batch_code'],
+                'mfg_date'=>$data['batch_mfg_date'] ?? null,'exp_date'=>$data['batch_exp_date'] ?? null,
+                'quantity_planned'=>$qtyPlanned,
+            ];
+            if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
+            if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
+            $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
         }
-
-        // Only update the fields you provided (so you can leave older batches untouched)
-        $upd = [];
-        if (array_key_exists('batch_mfg_date', $data)) $upd['mfg_date'] = $data['batch_mfg_date'];
-        if (array_key_exists('batch_exp_date', $data)) $upd['exp_date'] = $data['batch_exp_date'];
-        if (array_key_exists('batch_qty_planned', $data)) $upd['quantity_planned'] = $qtyPlanned;
-        if ($upd) {
-            if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $upd['updated_at']=now();
-            \DB::connection($c)->table('product_batches_s')
-              ->where('id', $existing->id)
-              ->update($upd);
-        }
-
-        $sharedBatchId = $existing->id;
-    } else {
-        if (\Schema::connection($c)->hasColumn('product_batches_s','created_at')) $ins['created_at']=now();
-        if (\Schema::connection($c)->hasColumn('product_batches_s','updated_at')) $ins['updated_at']=now();
-        $sharedBatchId = \DB::connection($c)->table('product_batches_s')->insertGetId($ins);
-    }
-}
-
-
-    // Create ONE print run anchored to the root
-    $createRun = $req->boolean('create_print_run', true) && \Schema::connection($c)->hasTable('print_runs_s');
-    $rootRunId = null;
-    if ($createRun) {
-        $rootRunId = \DB::connection($c)->table('print_runs_s')->insertGetId([
-            'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_id'=>$sharedBatchId,
-            'channel_id'=>$channelId,'vendor_name'=>$data['print_vendor'] ?? null,
-            'reel_start'=>$data['reel_start'] ?? null,'reel_end'=>$data['reel_end'] ?? null,
-            'qty_planned'=>$rootQty,'created_at'=>now(),
-        ]);
     }
 
-    // Mint ALL codes (for ALL SKUs) with print_run_id = root run
-    $k2        = $this->k2ForTenant($tenant->id);
-    $k3        = $this->k3ForTenant($tenant->id);    // micro key
-    $baseUrl   = $this->verifyBase();
-    $microMode = $data['micro_mode'] ?? 'hmac16';
-    $qrExpiryDefault = $data['expires_at'] ?? ($data['batch_exp_date'] ?? null);
-
-    // ---------- TENANT DEFAULTS for NFC/PUF: from saas_core (mysql) ----------
-    $coreConn = 'mysql';
-    $settingsMap = [];
-    if (\Schema::connection($coreConn)->hasTable('tenant_settings')) {
-        $settingsMap = \DB::connection($coreConn)->table('tenant_settings')
-            ->where('tenant_id', $tenant->id)
-            ->whereIn('key', ['nfc','puf'])
-            ->pluck('value_json', 'key')
-            ->all();
-    }
-    $settings = ['nfc' => $settingsMap['nfc'] ?? null, 'puf' => $settingsMap['puf'] ?? null];
-    try { if (is_string($settings['nfc'])) $settings['nfc'] = json_decode($settings['nfc'], true); } catch (\Throwable $e) {}
-    try { if (is_string($settings['puf'])) $settings['puf'] = json_decode($settings['puf'], true); } catch (\Throwable $e) {}
-
-    $vmode  = $data['verification_mode'];                   // 'qr' | 'qr_nfc' | 'qr_puf' | 'qr_puf_nfc' | 'puf_nfc'
+    // --- flags/defaults ---
+    $vmode  = $data['verification_mode']; // 'qr' | 'qr_nfc' | 'qr_puf' | 'qr_puf_nfc'
     $hasNfc = str_contains($vmode, 'nfc');
     $hasPuf = str_contains($vmode, 'puf');
 
-    $nfcDefaultKey   = $settings['nfc']['key']['current'] ?? null;
-    $pufDefaultAlg   = $settings['puf']['alg']            ?? null;
-    $pufDefaultThres = $settings['puf']['threshold']      ?? null;
-    // ------------------------------------------------------------------------
+    $nfcDefaultKey = $data['nfc_key_ref'] ?? null;
+    $pufDefaultAlg = $data['puf_alg'] ?? 'ORBv1';
+    $pufDefaultThr = $data['puf_score_threshold'] ?? 75.00;
 
-    $issuedBySku = [];
-    $labelsRoot  = [];
-    $tokensByPid = []; // for code graph
+    $microMode   = $data['micro_mode'] ?? 'hmac16';
+    $qrExpiryDef = $data['expires_at'] ?? ($data['batch_exp_date'] ?? null);
 
-    foreach ($qtyByProductId as $pid => $qtyPlan) {
-        $qtyPlan = (int)$qtyPlan;
-        $sku = (string)($meta[$pid]->sku ?? $pid);
-        if ($qtyPlan < 1) { $issuedBySku[$sku] = 0; continue; }
+    // --- keys (use your helpers if present) ---
+    $k2 = method_exists($this,'k2ForTenant') ? $this->k2ForTenant($tenant->id) : random_bytes(16);
+    $k3 = method_exists($this,'k3ForTenant') ? $this->k3ForTenant($tenant->id) : random_bytes(16);
 
-        $rows = [];
-        for ($i=0; $i<$qtyPlan; $i++) {
-            // unique token
-            do {
-                $token = $this->base64url(random_bytes(16));
-                $exists = \DB::connection($c)->table('qr_codes_s')
-                    ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
-            } while ($exists);
-
-            // micro / watermark signals
-            $microChk = null; $microCode = null; $wmHash = null;
-            if ($microMode === 'hmac16') {
-                $microRaw  = hash_hmac('sha256', $token, $k3, true);          // K3
-                $microChk  = substr($microRaw, 0, 16);                         // VARBINARY(16)
-                $microCode = self::base32Crockford(substr($microRaw,0,8), 13); // 13-char human code
-
-                $wmRaw  = hash_hmac('sha256', $token, $k2, true);              // K2
-                $wmHash = substr($wmRaw, 0, 16);                                // VARBINARY(16)
-            }
-
-            // Build insert row (qr_codes_s)
-            $rows[] = [
-                'tenant_id'       => $tenant->id,
-                'token'           => $token,
-                'token_ver'       => 1,
-                'token_hash'      => hash('sha256', $token),
-                'status'          => 'issued',
-                'verification_mode'=> $vmode,
-                'version'         => 1,
-                'product_id'      => (int)$pid,
-                'batch_id'        => $sharedBatchId,
-                'channel_id'      => $channelId,
-                'print_run_id'    => $rootRunId,
-
-                'micro_chk'       => $microChk,
-                'watermark_hash'  => $wmHash,
-                'human_code'      => $microCode,
-
-                'issued_at'       => now(),
-                'activated_at'    => null,
-                'voided_at'       => null,
-                // if you have a policy, replace null with policy/app override
-                'expires_at'      => $data['expires_at'] ?? null,
-
-                // ---------- NEW: NFC columns ----------
-                'nfc_key_ref'     => $hasNfc ? ($data['nfc_key_ref'] ?? $nfcDefaultKey) : null,
-                'nfc_uid'         => null,                    // set later at enroll
-                'nfc_ctr_last'    => $hasNfc ? 0 : 0,         // start at 0, verifier will advance
-
-                // ---------- NEW: PUF columns ----------
-                'puf_id'                 => null,             // set later at enroll
-                'puf_fingerprint_hash'   => null,             // set later (64-char hex)
-                'puf_alg'                => $hasPuf ? ($data['puf_alg'] ?? $pufDefaultAlg) : null,
-                'puf_score_threshold'    => $hasPuf ? ($data['puf_score_threshold'] ?? $pufDefaultThres) : null,
-            ];
-
-            // Label preview for ROOT only
-            if ((int)$pid === (int)$product->id) {
-                $labelsRoot[] = [
-                    'token'      => $token,
-                    'url'        => $baseUrl.'/v/'.$token.'?ch='.rawurlencode($data['channel_code']).'&v=1',
-                    'micro_code' => $microCode,
-                    'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
-                ];
+    // --- schema guards for NFC/PUF columns ---
+    if ($hasNfc) {
+        foreach (['nfc_key_ref','nfc_uid','nfc_ctr_last'] as $col) {
+            if (!\Schema::connection($c)->hasColumn('qr_codes_s', $col)) {
+                return response()->json(['message'=>"qr_codes_s is missing required column: $col (NFC mode)"], 500);
             }
         }
-
-        \DB::connection($c)->table('qr_codes_s')->insert($rows);
-
-        // Track for code graph
-        $tokensByPid[$pid] = array_column($rows, 'token');
-        $issuedBySku[$sku] = $qtyPlan;
+        if (!\Schema::connection($c)->hasTable('nfc_tags_s')) {
+            return response()->json(['message'=>'nfc_tags_s table not present'], 500);
+        }
+    }
+    if ($hasPuf) {
+        foreach (['puf_id','puf_fingerprint_hash','puf_alg','puf_score_threshold'] as $col) {
+            if (!\Schema::connection($c)->hasColumn('qr_codes_s', $col)) {
+                return response()->json(['message'=>"qr_codes_s is missing required column: $col (PUF mode)"], 500);
+            }
+        }
+        if (!\Schema::connection($c)->hasTable('puf_jobs_s')) {
+            return response()->json(['message'=>'puf_jobs_s table not present'], 500);
+        }
     }
 
-    // === CODE GRAPH ==================================================================================
-    $havePC  = \Schema::connection($c)->hasTable('product_codes_s');
-    $havePCE = \Schema::connection($c)->hasTable('product_code_edges_s');
-
-    if ($havePC) {
-        // Mirror tokens into product_codes_s (kind: primary for root, component otherwise)
-        foreach ($tokensByPid as $pid => $tokens) {
-            $kind = ((int)$pid === (int)$product->id) ? 'primary' : 'component';
-            $pcRows = [];
-            foreach ($tokens as $tok) {
-                $pcRows[] = [
-                    'tenant_id'=>$tenant->id,
-                    'product_id'=>(int)$pid,
-                    'code'=>$tok,
-                    'kind'=>$kind,
-                    'parent_code_id'=>null,
-                    'status'=>'active',
-                    'created_at'=>now(),
-                    'updated_at'=>now(),
-                ];
-            }
-            if ($pcRows) \DB::connection($c)->table('product_codes_s')->insert($pcRows);
-        }
-
-        if ($havePCE && \Schema::connection($c)->hasTable('product_components_s')) {
-            // Fetch code ids
-            $codeIdByToken = [];
-            $flat = [];
-            foreach ($tokensByPid as $toks) { foreach ($toks as $t) $flat[] = $t; }
-            foreach (array_chunk($flat, 1000) as $chunk) {
-                $rs = \DB::connection($c)->table('product_codes_s')
-                    ->where('tenant_id',$tenant->id)->whereIn('code',$chunk)->get(['id','code']);
-                foreach ($rs as $r) $codeIdByToken[$r->code] = (int)$r->id;
+    // --- transactional body with detailed error handling ---
+    try {
+        return \DB::connection($c)->transaction(function () use (
+            $c,$tenant,$product,$meta,$qtyByProductId,$rootQty,$sharedBatchId,$channelId,$microMode,$k2,$k3,$qrExpiryDef,
+            $vmode,$hasNfc,$hasPuf,$nfcDefaultKey,$pufDefaultAlg,$pufDefaultThr,$limits,$data,$doCascade
+        ) {
+            // print run (respect create_print_run flag; default true)
+            $createRun = array_key_exists('create_print_run',$data) ? (bool)$data['create_print_run'] : true;
+            $rootRunId = null;
+            if ($createRun && \Schema::connection($c)->hasTable('print_runs_s')) {
+                $rootRunId = \DB::connection($c)->table('print_runs_s')->insertGetId([
+                    'tenant_id'=>$tenant->id,'product_id'=>$product->id,'batch_id'=>$sharedBatchId,
+                    'channel_id'=>$channelId,'vendor_name'=>$data['print_vendor'] ?? null,
+                    'reel_start'=>$data['reel_start'] ?? null,'reel_end'=>$data['reel_end'] ?? null,
+                    'qty_planned'=>$rootQty,'created_at'=>now(),
+                ]);
             }
 
-            // Per-product queues of code ids
-            $queue = [];
-            foreach ($tokensByPid as $pid => $list) {
-                $qIds = new \SplQueue();
-                foreach ($list as $tok) $qIds->enqueue($codeIdByToken[$tok]);
-                $queue[$pid] = $qIds;
-            }
+            // NFC reservation (transactional, lock-first)
+            $totalToMint = array_sum($qtyByProductId);
+            $nfcReserved = []; $nfc_i = 0; $bindingsNfc = [];
+            if ($hasNfc) {
+                $toLock = \DB::connection($c)->table('nfc_tags_s')
+                    ->where('tenant_id', $tenant->id)
+                    ->where('status', 'qc_pass')
+                    ->orderBy('id')
+                    ->limit((int)$totalToMint)
+                    ->lockForUpdate()
+                    ->get(['id','nfc_uid','nfc_key_ref','ctr_seed']);
 
-            // Cache BOM children
-            $bomChildren = function(int $pid) use ($tenant,$c) {
-                static $cache = [];
-                if (!isset($cache[$pid])) {
-                    $rows = \DB::connection($c)->table('product_components_s')
-                        ->where('tenant_id',$tenant->id)->where('parent_product_id',$pid)
-                        ->get(['child_product_id','quantity']);
-                    $cache[$pid] = $rows->map(fn($r)=>[(int)$r->child_product_id, max(1,(int)ceil((float)$r->quantity))])->all();
+                if ($toLock->count() < (int)$totalToMint) {
+                    // controlled 422
+                    return response()->json([
+                        'message'   => 'Insufficient NFC inventory.',
+                        'needed'    => (int)$totalToMint,
+                        'available' => (int)$toLock->count(),
+                        'hint'      => 'Import NFC tags with status=qc_pass for this tenant before minting qr_nfc/qr_puf_nfc.'
+                    ], 422);
                 }
-                return $cache[$pid];
-            };
 
-            $edges = [];
-            $pair = function(int $parentPid) use (&$pair, $bomChildren, &$edges, &$queue, $tenant) {
-                $parentQ = $queue[$parentPid] ?? null; if (!$parentQ) return;
-                $spec = $bomChildren($parentPid); if (!$spec) return;
+                $ids = $toLock->pluck('id')->all();
+                \DB::connection($c)->table('nfc_tags_s')
+                    ->where('tenant_id', $tenant->id)
+                    ->whereIn('id', $ids)
+                    ->update([
+                        'status'       => 'reserved',
+                        'reserved_at'  => now(),
+                        'batch_id'     => $sharedBatchId,
+                        'print_run_id' => $rootRunId,
+                        'updated_at'   => now(),
+                    ]);
 
-                $count = $parentQ->count();
-                for ($i=0; $i<$count; $i++) {
-                    $parentCodeId = $parentQ->dequeue();
-                    foreach ($spec as [$childPid, $qty]) {
-                        for ($k=0; $k<$qty; $k++) {
-                            $childQ = $queue[$childPid] ?? null;
-                            if (!$childQ || $childQ->isEmpty()) throw new \RuntimeException("Not enough child codes for product $childPid");
-                            $childCodeId = $childQ->dequeue();
+                $nfcReserved = $toLock->map(fn($r)=>[
+                    'id'=>(int)$r->id,'nfc_uid'=>$r->nfc_uid,'nfc_key_ref'=>$r->nfc_key_ref,'ctr_seed'=>(int)$r->ctr_seed
+                ])->values()->all();
+            }
 
-                            $edges[] = [
-                                'tenant_id'=>$tenant->id,
-                                'parent_code_id'=>$parentCodeId,
-                                'child_code_id'=>$childCodeId,
-                                'created_at'=>now(),
-                                'updated_at'=>now(),
-                            ];
+            $issuedBySku = []; $labelsRoot = []; $tokensByPid = [];
 
-                            // recurse down from this child
-                            $saved = $queue[$childPid] ?? null;
-                            $tmp = new \SplQueue(); $tmp->enqueue($childCodeId);
-                            $queue[$childPid] = $tmp;
-                            $pair($childPid);
-                            $queue[$childPid] = $saved;
+            foreach ($qtyByProductId as $pid => $qtyPlan) {
+                $pid = (int)$pid; $qtyPlan = (int)$qtyPlan;
+                if ($qtyPlan < 1) { $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = 0; continue; }
+
+                $rows = [];
+                for ($i=0; $i<$qtyPlan; $i++) {
+                    // unique token
+                    do {
+                        $token = $this->base64url(random_bytes(16));
+                        $exists = \DB::connection($c)->table('qr_codes_s')
+                            ->where('tenant_id',$tenant->id)->where('token',$token)->exists();
+                    } while ($exists);
+
+                    // micro/watermark
+                    $microChk = null; $microCode = null; $wmHash = null;
+                    if ($microMode === 'hmac16') {
+                        $microRaw = hash_hmac('sha256', $token, $k3, true);
+                        $microChk = substr($microRaw, 0, 16);
+                        $microCode= self::base32Crockford(substr($microRaw,0,8), 13);
+                        $wmRaw    = hash_hmac('sha256', $token, $k2, true);
+                        $wmHash   = substr($wmRaw, 0, 16);
+                    }
+
+                    // NFC assignment
+                    $nfcKeyRef = null; $nfcUid = null; $nfcCtr = 0; $nfcTagId = null;
+                    if ($hasNfc) {
+                        if (!isset($nfcReserved[$nfc_i])) {
+                            return response()->json(['message' => 'Reserved NFC tags exhausted unexpectedly.'], 422);
                         }
+                        $tag = $nfcReserved[$nfc_i++];
+                        $nfcTagId = (int)$tag['id'];
+                        $nfcKeyRef = $data['nfc_key_ref'] ?? $tag['nfc_key_ref'];
+                        $nfcUid    = strtoupper($tag['nfc_uid']);
+                        $nfcCtr    = (int)$tag['ctr_seed'];
+                    }
+
+                    // PUF defaults (enrollment done later via device)
+                    $pufAlg = $hasPuf ? $pufDefaultAlg : null;
+                    $pufThr = $hasPuf ? $pufDefaultThr : null;
+
+                    $rows[] = [
+                        'tenant_id'        => $tenant->id,
+                        'token'            => $token,
+                        'token_ver'        => 1,
+                        'token_hash'       => hash('sha256',$token),
+                        'status'           => 'issued',
+                        'verification_mode'=> $vmode,
+                        'version'          => 1,
+                        'product_id'       => $pid,
+                        'batch_id'         => $sharedBatchId,
+                        'channel_id'       => $channelId,
+                        'print_run_id'     => $rootRunId,
+                        'micro_chk'        => $microChk,
+                        'watermark_hash'   => $wmHash,
+                        'human_code'       => $microCode,
+                        'issued_at'        => now(),
+                        'expires_at'       => $qrExpiryDef,
+
+                        // NFC inline on QR
+                        'nfc_key_ref'      => $hasNfc ? $nfcKeyRef : null,
+                        'nfc_uid'          => $hasNfc ? $nfcUid    : null,
+                        'nfc_ctr_last'     => $hasNfc ? $nfcCtr    : 0,
+
+                        // PUF placeholders
+                        'puf_id'               => null,
+                        'puf_fingerprint_hash' => null,
+                        'puf_alg'              => $pufAlg,
+                        'puf_score_threshold'  => $pufThr,
+                    ];
+
+                    if ($hasNfc && $nfcTagId) $bindingsNfc[] = ['tag_id'=>$nfcTagId,'token'=>$token];
+
+                    // Label for ROOT product using named route (absolute URL)
+                    if ((int)$pid === (int)$product->id) {
+                        $verifyUrl = route('qr.verify', ['token' => $token], true);
+                        $labelsRoot[] = [
+                            'token'      => $token,
+                            'url'        => $verifyUrl . '?ch=' . rawurlencode($data['channel_code']) . '&v=1',
+                            'micro_code' => $microCode,
+                            'micro_hex'  => $microChk ? strtoupper(bin2hex($microChk)) : null,
+                        ];
                     }
                 }
-            };
 
-            $pair((int)$product->id);
+                // INSERT QR rows
+                \DB::connection($c)->table('qr_codes_s')->insert($rows);
 
-            if ($edges) {
-                \DB::connection($c)->table('product_code_edges_s')->insert($edges);
-                // convenience parent pointer
-                foreach ($edges as $e) {
-                    \DB::connection($c)->table('product_codes_s')
-                        ->where('id',$e['child_code_id'])
-                        ->update(['parent_code_id'=>$e['parent_code_id'],'updated_at'=>now()]);
+                // Map tokens -> ids for this chunk
+                $insertedTokens = array_column($rows, 'token');
+                $qrMap = \DB::connection($c)->table('qr_codes_s')
+                    ->where('tenant_id',$tenant->id)->whereIn('token',$insertedTokens)
+                    ->pluck('id', 'token')->all();
+                if (count($qrMap) !== count($insertedTokens)) {
+                    return response()->json([
+                        'message' => 'Inserted QR rows not found for binding (token->id map incomplete)'
+                    ], 422);
                 }
+
+                // Enqueue PUF jobs (if requested)
+                if ($hasPuf) {
+                    $jobRows = [];
+                    foreach ($insertedTokens as $tok) {
+                        $qrId = (int)($qrMap[$tok] ?? 0);
+                        if (!$qrId) continue;
+                        $jobRows[] = [
+                            'tenant_id'=>$tenant->id,'qr_code_id'=>$qrId,
+                            'batch_id'=>$sharedBatchId,'print_run_id'=>$rootRunId,
+                            'status'=>'queued','created_at'=>now(),'updated_at'=>now(),
+                        ];
+                    }
+                    if ($jobRows) \DB::connection($c)->table('puf_jobs_s')->insert($jobRows);
+                }
+
+                // NFC reverse binding for this chunk
+                if ($hasNfc && $bindingsNfc) {
+                    foreach ($bindingsNfc as $b) {
+                        $qrId = (int)($qrMap[$b['token']] ?? 0);
+                        if (!$qrId) continue;
+                        \DB::connection($c)->table('nfc_tags_s')
+                            ->where('tenant_id',$tenant->id)->where('id',(int)$b['tag_id'])
+                            ->update([
+                                'qr_code_id' => $qrId,
+                                'status'     => 'bound',
+                                'bound_at'   => now(),
+                                'updated_at' => now(),
+                            ]);
+                    }
+                }
+
+                $tokensByPid[$pid] = $insertedTokens;
+                $issuedBySku[(string)($meta[$pid]->sku ?? $pid)] = $qtyPlan;
+                $bindingsNfc = []; // reset after binding this chunk
             }
-        }
+
+            $issuedTotal = array_sum($issuedBySku);
+
+            return response()->json([
+                'root_sku'            => (string)$product->sku,
+                'cascade'             => (bool)$doCascade,
+                'plan_limits_applied' => $limits ?? [],
+                'print_run_id'        => $rootRunId,
+                'batch_id'            => $sharedBatchId,
+                'channel_id'          => $channelId,
+                'issued'              => (int)$issuedTotal,
+                'issued_by_sku'       => $issuedBySku,
+                'labels'              => $labelsRoot,
+            ], 201);
+        }, 3);
+    } catch (\Throwable $e) {
+        \Log::error('mintForProduct failed', [
+            'tenant_id' => $tenant->id,
+            'product_id'=> $product->id ?? null,
+            'error'     => $e->getMessage(),
+            'file'      => $e->getFile(),
+            'line'      => $e->getLine(),
+        ]);
+
+        return response()->json([
+            'message' => 'Mint failed',
+            'error'   => $e->getMessage(),
+        ], 422);
     }
-    // === /CODE GRAPH =================================================================================
-
-    $issuedTotal = array_sum($issuedBySku);
-
-    return response()->json([
-        'root_sku'            => (string)$product->sku,
-        'cascade'             => (bool)$doCascade,
-        'plan_limits_applied' => $limits,
-        'print_run_id'        => $rootRunId,
-        'batch_id'            => $sharedBatchId,
-        'channel_id'          => $channelId,
-        'issued'              => (int)$issuedTotal,
-        'issued_by_sku'       => $issuedBySku,
-        'labels'              => $labelsRoot, // root only
-    ], 201);
 }
+
 
 public function bindTemplateForBatch(\Illuminate\Http\Request $req, $idOrSku, $batchCode)
 {
