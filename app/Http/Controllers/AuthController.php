@@ -71,6 +71,19 @@ class AuthController extends Controller
 
         $user = User::where('email', $data['email'])->first();
 
+    //   return response()->json($user);
+
+    //   exit;
+
+       $UserStatus = OrgMember::where('user_id', $user->id)->first();
+
+    if ($UserStatus && $UserStatus->status === 'disabled') {
+    throw ValidationException::withMessages([
+        'email' => ['This Account is disabled. Please contact administrator.']
+    ]);
+}
+
+
         if (!$user || !Hash::check($data['password'], $user->password)) {
             throw ValidationException::withMessages(['email' => ['Invalid credentials.']]);
         }
